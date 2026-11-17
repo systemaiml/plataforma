@@ -1,0 +1,18 @@
+/* Estilos de inicio de sesión y barra de usuario */
+.topbar #session { margin-left: auto; display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
+.topbar #session #userEmail { font-size: .9rem; opacity: .85; }
+#login { max-width: 26rem; margin: 2rem auto; }
+#login h2 { margin-top: 0; }
+#login .field { margin-bottom: .9rem; }
+#login input { width: 100%; box-sizing: border-box; }
+#loginMsg { min-height: 1.3em; color: #b3261e; font-size: .92rem; margin: .25rem 0 .75rem; }
+
+#setPass { max-width: 26rem; margin: 2rem auto; }
+#setPass h2 { margin-top: 0; }
+#setPass .field { margin-bottom: .9rem; }
+#setPass input { width: 100%; box-sizing: border-box; }
+.msgerr { min-height: 1.3em; color: #b3261e; font-size: .92rem; margin: .25rem 0 .75rem; }
+#login .row { gap: .5rem; flex-wrap: wrap; }
+/* Funciones solo para administradores */
+body:not(.is-admin) [data-admin] { display: none !important; }
+body.is-admin .noadmin { display: none; }
