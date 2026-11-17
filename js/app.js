@@ -59,12 +59,14 @@
 
   /* ---------- Indicadores rápidos por hoja ---------- */
   const esEntregada = v => isIso(v) || norm(v).includes('entreg');
+  const esCumple = v => norm(v).startsWith('cumple');
   const sinTelefono = v => !str(v).trim() || norm(v).startsWith('sin');
   const enHoja = (id, r) => state.ruts[id] && state.ruts[id].has(rutClean(r.rut));
   const RAPIDOS = {
     inscritos: [
-      { id: 'cumple', l: 'Cumple', f: r => norm(r.observacion) === 'cumple' },
-      { id: 'nocumple', l: 'Con otra observación', f: r => !!str(r.observacion).trim() && norm(r.observacion) !== 'cumple' },
+      { id: 'cumple', l: 'Cumple', f: r => esCumple(r.observacion) },
+      { id: 'nocumple', l: 'No cumple', f: r => norm(r.observacion).startsWith('no cumple') },
+      { id: 'otraobs', l: 'Otra observación', f: r => !!str(r.observacion).trim() && !esCumple(r.observacion) && !norm(r.observacion).startsWith('no cumple') },
       { id: 'nobenef', l: 'No están en Beneficiarios', f: r => !enHoja('beneficiarios', r) },
       { id: 'sintel', l: 'Sin teléfono', f: r => sinTelefono(r.telefono) }
     ],
@@ -412,6 +414,20 @@
       const label = el('label', { for: fid, text: c.h + (req ? ' *' : '') });
       let input;
       const val = mostrar(c, base[c.k]);
+      if (c.opciones) {
+        const actual = str(base[c.k]).trim();
+        const extra = actual && !c.opciones.includes(actual) ? [actual] : [];
+        input = el('select', { id: fid },
+          el('option', { value: '', text: '— Sin observación —' }),
+          ...c.opciones.map(o => el('option', { value: o, text: o })),
+          ...extra.map(o => el('option', { value: o, text: o + ' (valor actual)' })),
+          el('option', { value: '__otra', text: 'Otra (escribir)…' }));
+        input.value = actual;
+        const otra = el('input', { id: fid + '_otra', autocomplete: 'off', placeholder: 'Escribe la observación', 'aria-label': c.h + ' (otra)', hidden: true });
+        input.addEventListener('change', () => { otra.hidden = input.value !== '__otra'; if (!otra.hidden) otra.focus(); });
+        grid.append(el('div', { class: 'field' }, label, input, otra));
+        return;
+      }
       if (c.type === 'long') input = el('textarea', { id: fid, rows: '2' });
       else if (c.type === 'int') input = el('input', { id: fid, type: 'number', min: '0', max: '120' });
       else {
@@ -456,7 +472,11 @@
     hoja.campos.forEach(c => F(c.k).removeAttribute('aria-invalid'));
     const fail = (k, msg) => { F(k).setAttribute('aria-invalid', 'true'); F(k).focus(); setMsg(msg); };
     const rec = {};
-    hoja.campos.forEach(c => { rec[c.k] = celda(c, F(c.k).value); });
+    hoja.campos.forEach(c => {
+      let val = F(c.k).value;
+      if (val === '__otra') val = F(c.k + '_otra').value;
+      rec[c.k] = celda(c, val);
+    });
     if (hoja.rutObligatorio && !rec.nombre) return fail('nombre', 'El nombre es obligatorio.');
     if (hoja.rutObligatorio && !rec.rut) return fail('rut', 'El RUT es obligatorio.');
     if (!hoja.rutObligatorio && !rec.nombre && !rec.rut && !rec.serie && !rec.identificador) return fail('nombre', 'Completa al menos el nombre, el RUT, el N° de serie o el identificador.');
