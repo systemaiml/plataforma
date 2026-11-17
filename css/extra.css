@@ -74,3 +74,17 @@ td.largo { max-width: 260px; font-size: .9rem; }
   .topbar #session { margin-left: 0; width: 100%; justify-content: space-between; }
   .titles p { display: none; }
 }
+
+/* Paleta mostaza */
+:root {
+  --celeste: #b8890f;
+  --celeste-claro: #cc9d22;
+  --celeste-oscuro: #6e5004;
+  --panel: rgba(58, 40, 0, .30);
+  --linea: rgba(255, 255, 255, .28);
+  --tinta: #3d2c00;
+}
+body { background: var(--celeste) linear-gradient(165deg, var(--celeste-claro) 0%, var(--celeste) 45%, #96700a 100%) fixed; }
+.stat:hover, .stat:focus-visible { background: rgba(58, 40, 0, .48); }
+.btn.primary:hover { background: #fbf3dd; }
+dialog::backdrop { background: rgba(40, 28, 0, .6); }
