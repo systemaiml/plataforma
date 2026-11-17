@@ -20,12 +20,19 @@
     { k: 'alertas',  h: 'Alertas de revisión' }
   ];
   const PRESENTE = ['En ambas', 'Solo inscritos', 'Solo oficial'];
-  const STORE_KEY = 'personas-mayores.las-cabras.v1';
+  const CFG = window.APP_CONFIG || {};
+  // Si el funcionario llega desde un correo de invitación o recuperación, debe crear su contraseña
+  let needPassword = /[#&?]type=(invite|recovery)/.test(location.hash);
+  const linkError = (/[#&?]error_description=([^&]+)/.exec(location.hash) || [])[1];
+  const db = window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY);
+  // Campos que en la base de datos tienen otro nombre (columnas en minúscula)
+  const DB_KEY = { vIns: 'vins', vOf: 'vof', fIns: 'fins', fOf: 'fof' };
+  const dbKey = k => DB_KEY[k] || k;
   const WIDTHS = [34, 14, 7, 13, 16, 22, 30, 30, 22, 14, 10, 10, 16, 16, 50];
 
   const $ = (s, r = document) => r.querySelector(s);
   const state = {
-    rows: [], nextId: 1, sort: { k: null, dir: 1 }, page: 1, pageSize: 25,
+    rows: [], userId: null, isAdmin: false, loaded: false, lastLoad: 0, sort: { k: null, dir: 1 }, page: 1, pageSize: 25,
     q: '', fPresente: '', fRsh: '', fAlertas: false,
     editingId: null, deletingId: null, viewingId: null, pendingImport: null
   };
@@ -72,16 +79,55 @@
     return e;
   }
 
-  /* ---------- Persistencia (navegador) ---------- */
-  function save() {
-    try { localStorage.setItem(STORE_KEY, JSON.stringify({ rows: state.rows, nextId: state.nextId })); }
-    catch (e) { toast('No se pudo guardar en el navegador. Descarga el Excel para no perder los cambios.'); }
+  /* ---------- Persistencia (Supabase) ---------- */
+  function toDb(rec) {
+    const o = {};
+    COLS.forEach(c => {
+      if (!(c.k in rec)) return;
+      let v = rec[c.k];
+      if (c.type === 'date') v = /^\d{4}-\d{2}-\d{2}$/.test(str(v)) ? v : null;
+      else if (c.type === 'num') v = (v === '' || v == null || !isFinite(Number(v))) ? null : Math.round(Number(v));
+      else v = v == null ? '' : String(v);
+      o[dbKey(c.k)] = v;
+    });
+    return o;
   }
-  function load() {
-    try {
-      const d = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
-      if (d && Array.isArray(d.rows)) { state.rows = d.rows; state.nextId = d.nextId || (d.rows.length + 1); }
-    } catch (e) { /* sin datos guardados */ }
+  function fromDb(d) {
+    const o = { _id: d.id };
+    COLS.forEach(c => {
+      let v = d[dbKey(c.k)];
+      if (v == null && c.type !== 'num') v = '';
+      o[c.k] = v;
+    });
+    return o;
+  }
+  async function loadAll() {
+    const out = [], step = 1000;
+    for (let from = 0; ; from += step) {
+      const { data, error } = await db.from('usuarios').select('*')
+        .order('nombre', { ascending: true }).order('id', { ascending: true })
+        .range(from, from + step - 1);
+      if (error) throw error;
+      out.push(...data);
+      if (data.length < step) break;
+    }
+    state.rows = out.map(fromDb);
+    state.loaded = true;
+    state.lastLoad = Date.now();
+  }
+  async function dbInsert(rec) {
+    const { data, error } = await db.from('usuarios').insert(toDb(rec)).select().single();
+    if (error) throw error;
+    return fromDb(data);
+  }
+  async function dbUpdate(id, rec) {
+    const { data, error } = await db.from('usuarios').update(toDb(rec)).eq('id', id).select().single();
+    if (error) throw error;
+    return fromDb(data);
+  }
+  async function dbDelete(id) {
+    const { error } = await db.from('usuarios').delete().eq('id', id);
+    if (error) throw error;
   }
 
   /* ---------- Importar / exportar Excel ---------- */
@@ -124,20 +170,35 @@
       if (!rows.length) throw new Error('La hoja no tiene filas con datos.');
       state.pendingImport = rows;
       if (!state.rows.length) return confirmImport();
-      $('#impText').textContent = `Se encontraron ${rows.length} registros en la hoja «${sheet.name}». Esto reemplazará los ${state.rows.length} registros que hay ahora en este navegador. ¿Continuar?`;
+      $('#impText').textContent = `Se encontraron ${rows.length} registros en la hoja «${sheet.name}». Se agregarán los nuevos y se actualizarán los que ya existan (según RUT). No se elimina a nadie. Hay ${state.rows.length} registros en la base de datos. ¿Continuar?`;
       $('#dlgImport').showModal();
     } catch (e) {
       toast('No se pudo leer el Excel: ' + e.message);
     }
   }
-  function confirmImport() {
-    const rows = state.pendingImport || [];
-    state.rows = rows.map((r, i) => Object.assign({ _id: i + 1 }, r));
-    state.nextId = rows.length + 1;
+  async function confirmImport() {
+    const all = state.pendingImport || [];
     state.pendingImport = null;
-    state.page = 1;
-    save(); refresh();
-    toast(`Se cargaron ${rows.length} registros.`);
+    const byRut = new Map();
+    let sinRut = 0;
+    all.forEach(r => { const k = rutClean(r.rut); if (!k) { sinRut++; return; } byRut.set(k, r); });
+    const rows = [...byRut.values()];
+    const repetidos = all.length - sinRut - rows.length;
+    try {
+      for (let i = 0; i < rows.length; i += 500) {
+        toast(`Subiendo registros… ${Math.min(i + 500, rows.length)} de ${rows.length}`);
+        const { error } = await db.from('usuarios').upsert(rows.slice(i, i + 500).map(toDb), { onConflict: 'rut' });
+        if (error) throw error;
+      }
+      await loadAll();
+      state.page = 1; refresh();
+      let msg = `Listo: ${rows.length} registros guardados en la base de datos.`;
+      if (repetidos) msg += ` ${repetidos} con RUT repetido (se usó el último).`;
+      if (sinRut) msg += ` ${sinRut} sin RUT (omitidos).`;
+      toast(msg);
+    } catch (e) {
+      toast('No se pudo subir el Excel: ' + (e.message || e));
+    }
   }
   async function exportExcel() {
     const data = state.rows.map(r => COLS.map(c => {
@@ -227,7 +288,7 @@
       const acc = el('td', { class: 'acc' },
         el('button', { class: 'btn small', 'data-act': 'view', 'data-id': r._id, 'aria-label': 'Ver ' + str(r.nombre), text: 'Ver' }),
         el('button', { class: 'btn small', 'data-act': 'edit', 'data-id': r._id, 'aria-label': 'Editar ' + str(r.nombre), text: 'Editar' }),
-        el('button', { class: 'btn small danger', 'data-act': 'del', 'data-id': r._id, 'aria-label': 'Eliminar ' + str(r.nombre), text: 'Eliminar' }));
+        state.isAdmin ? el('button', { class: 'btn small danger', 'data-act': 'del', 'data-id': r._id, 'aria-label': 'Eliminar ' + str(r.nombre), text: 'Eliminar' }) : null);
       tbody.append(el('tr', null,
         el('td', { class: 'nombre', text: str(r.nombre) }),
         el('td', { class: 'rut', text: str(r.rut) }),
@@ -282,8 +343,9 @@
   }
 
   function refresh() {
-    const has = state.rows.length > 0 || state.started;
-    $('#emptyState').hidden = has;
+    const ready = !!state.userId && state.loaded;
+    const has = ready && (state.rows.length > 0 || state.started);
+    $('#emptyState').hidden = !ready || has;
     $('#app').hidden = !has;
     if (!has) return;
     renderStats(); renderFilterOptions(); renderHead(); renderBody();
@@ -306,7 +368,7 @@
   function setMsg(text, warn) {
     const m = $('#formMsg'); m.textContent = text; m.classList.toggle('warn', !!warn);
   }
-  function submitForm(ev) {
+  async function submitForm(ev) {
     ev.preventDefault();
     FIELDS.forEach(k => F(k).removeAttribute('aria-invalid'));
     const v = {}; FIELDS.forEach(k => { v[k] = F(k).value.trim(); });
@@ -333,17 +395,27 @@
       nombre: v.nombre, rut: v.rut, edad, telefono: v.telefono, fecha: v.fecha, presente: v.presente,
       obs: v.obs, rsh: v.rsh, inscribe: v.inscribe, notas: v.notas, alertas
     };
-    if (state.editingId) {
-      Object.assign(state.rows.find(x => x._id === state.editingId), rec);
-      toast('Usuario modificado.');
-    } else {
-      Object.assign(rec, { vIns: 0, vOf: 0, fIns: '', fOf: '' });
-      rec._id = state.nextId++;
-      state.rows.unshift(rec);
-      toast('Usuario ingresado.');
+    const btn = $('#saveBtn');
+    btn.disabled = true;
+    try {
+      if (state.editingId) {
+        const row = await dbUpdate(state.editingId, rec);
+        const i = state.rows.findIndex(x => x._id === state.editingId);
+        if (i >= 0) state.rows[i] = row;
+        toast('Usuario modificado.');
+      } else {
+        Object.assign(rec, { vIns: 0, vOf: 0, fIns: '', fOf: '' });
+        state.rows.unshift(await dbInsert(rec));
+        toast('Usuario ingresado.');
+      }
+    } catch (e) {
+      btn.disabled = false;
+      if (e && e.code === '23505') return fail('rut', 'Ya existe una persona con ese RUT.');
+      return setMsg('No se pudo guardar: ' + (e.message || e));
     }
+    btn.disabled = false;
     if (!st.ok) toast('Guardado. El dígito verificador del RUT no coincide: se marcó para revisión.');
-    save(); $('#dlgForm').close(); refresh();
+    $('#dlgForm').close(); refresh();
   }
 
   /* ---------- Ver / eliminar ---------- */
@@ -362,7 +434,7 @@
   function openDelete(id) {
     const r = state.rows.find(x => x._id === id); if (!r) return;
     state.deletingId = id;
-    $('#delText').textContent = `¿Eliminar a ${r.nombre} (RUT ${r.rut})? Esta acción no se puede deshacer, salvo que vuelvas a cargar un Excel anterior.`;
+    $('#delText').textContent = `¿Eliminar a ${r.nombre} (RUT ${r.rut})? Esta acción no se puede deshacer. Se recomienda descargar un respaldo en Excel antes de eliminar.`;
     $('#dlgDelete').showModal();
   }
 
@@ -377,14 +449,17 @@
       return refresh();
     }
     if (t.dataset.act) {
-      const id = Number(t.dataset.id);
+      const id = t.dataset.id;
+      if (t.dataset.act === 'del' && !state.isAdmin) return;
       return t.dataset.act === 'view' ? openView(id) : t.dataset.act === 'edit' ? openForm(id) : openDelete(id);
     }
     switch (t.dataset.action) {
       case 'new': return openForm(null);
-      case 'import': return $('#file').click();
+      case 'import': return state.isAdmin ? $('#file').click() : toast('Solo un administrador puede cargar el Excel.');
+      case 'forgot': return forgotPassword();
       case 'export': return exportExcel();
       case 'start-empty': state.started = true; return refresh();
+      case 'logout': return db.auth.signOut();
     }
   });
   $('#file').addEventListener('change', e => { const f = e.target.files[0]; e.target.value = ''; handleFile(f); });
@@ -397,9 +472,14 @@
     setMsg(st.format && !st.ok ? `Aviso: el dígito verificador no coincide (debería ser ${st.dv}). Podrás guardarlo, pero quedará marcado para revisión.` : '', true);
   });
   $('#viewEdit').addEventListener('click', () => { $('#dlgView').close(); openForm(state.viewingId); });
-  $('#delConfirm').addEventListener('click', () => {
-    state.rows = state.rows.filter(r => r._id !== state.deletingId);
-    save(); $('#dlgDelete').close(); refresh(); toast('Usuario eliminado.');
+  $('#delConfirm').addEventListener('click', async () => {
+    try {
+      await dbDelete(state.deletingId);
+      state.rows = state.rows.filter(r => r._id !== state.deletingId);
+      $('#dlgDelete').close(); refresh(); toast('Usuario eliminado.');
+    } catch (e) {
+      toast('No se pudo eliminar: ' + (e.message || e));
+    }
   });
   $('#impConfirm').addEventListener('click', () => { $('#dlgImport').close(); confirmImport(); });
 
@@ -412,6 +492,96 @@
   $('#prev').addEventListener('click', () => { state.page--; renderBody(); });
   $('#next').addEventListener('click', () => { state.page++; renderBody(); });
 
-  load();
-  refresh();
+  /* ---------- Sesión (inicio / cierre) ---------- */
+  function showLogin(msg) {
+    document.body.classList.remove('is-admin');
+    $('#setPass').hidden = true;
+    $('#login').hidden = false;
+    $('#session').hidden = true;
+    $('#loginMsg').textContent = msg || '';
+    refresh();
+  }
+  async function onSession(session) {
+    if (!session) {
+      state.userId = null; state.isAdmin = false; state.loaded = false; state.rows = []; state.started = false;
+      return showLogin();
+    }
+    if (needPassword) {
+      state.userId = null;
+      $('#login').hidden = true; $('#session').hidden = true; $('#setPass').hidden = false;
+      $('#spMsg').textContent = '';
+      refresh();
+      return;
+    }
+    if (state.userId === session.user.id) return;
+    state.userId = session.user.id;
+    state.isAdmin = (session.user.app_metadata || {}).role === 'admin';
+    document.body.classList.toggle('is-admin', state.isAdmin);
+    $('#login').hidden = true;
+    $('#setPass').hidden = true;
+    $('#session').hidden = false;
+    $('#userEmail').textContent = (session.user.email || '') + (state.isAdmin ? ' · administrador' : '');
+    toast('Cargando datos…');
+    try { await loadAll(); }
+    catch (e) { toast('No se pudieron cargar los datos: ' + (e.message || e)); }
+    refresh();
+  }
+  $('#loginForm').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const btn = $('#loginBtn');
+    btn.disabled = true; $('#loginMsg').textContent = '';
+    const { error } = await db.auth.signInWithPassword({
+      email: $('#l_email').value.trim(), password: $('#l_pass').value
+    });
+    btn.disabled = false;
+    if (error) {
+      $('#loginMsg').textContent = /invalid/i.test(error.message)
+        ? 'Correo o contraseña incorrectos.' : 'No se pudo iniciar sesión: ' + error.message;
+    } else { $('#l_pass').value = ''; }
+  });
+  $('#setPassForm').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const p1 = $('#sp_1').value, p2 = $('#sp_2').value, msg = $('#spMsg');
+    if (p1.length < 8) { msg.textContent = 'La contraseña debe tener al menos 8 caracteres.'; return; }
+    if (p1 !== p2) { msg.textContent = 'Las contraseñas no coinciden.'; return; }
+    const btn = $('#spBtn'); btn.disabled = true; msg.textContent = '';
+    needPassword = false;
+    const { error } = await db.auth.updateUser({ password: p1 });
+    btn.disabled = false;
+    if (error) {
+      needPassword = true;
+      msg.textContent = 'No se pudo guardar la contraseña: ' + error.message;
+      return;
+    }
+    $('#sp_1').value = ''; $('#sp_2').value = '';
+    history.replaceState(null, '', location.pathname + location.search);
+    toast('Contraseña creada. Ya puedes usar la plataforma.');
+    const { data } = await db.auth.getSession();
+    onSession(data.session);
+  });
+  async function forgotPassword() {
+    const email = $('#l_email').value.trim();
+    if (!email) { $('#loginMsg').textContent = 'Escribe tu correo arriba y vuelve a pulsar «Olvidé mi contraseña».'; return; }
+    const { error } = await db.auth.resetPasswordForEmail(email, { redirectTo: location.origin + location.pathname });
+    $('#loginMsg').textContent = error
+      ? 'No se pudo enviar el correo: ' + error.message
+      : 'Si el correo está registrado, te enviamos un enlace para crear una nueva contraseña.';
+  }
+  // Al volver a la pestaña, refresca los datos si pasaron más de 2 minutos
+  document.addEventListener('visibilitychange', async () => {
+    if (document.hidden || !state.userId || Date.now() - state.lastLoad < 120000) return;
+    if (document.querySelector('dialog[open]')) return;
+    try { await loadAll(); refresh(); } catch (e) { /* se reintenta la próxima vez */ }
+  });
+
+  if (!CFG.SUPABASE_URL || !CFG.SUPABASE_ANON_KEY || /PEGAR/.test(CFG.SUPABASE_ANON_KEY)) {
+    showLogin('Falta configurar la clave de Supabase en js/config.js.');
+  } else {
+    db.auth.onAuthStateChange((ev, session) => {
+      if (ev === 'PASSWORD_RECOVERY') needPassword = true;
+      setTimeout(() => onSession(session), 0);
+    });
+    if (linkError) showLogin('El enlace del correo no es válido o expiró. Usa «Olvidé mi contraseña» para recibir uno nuevo.');
+    db.auth.getSession().then(({ data }) => onSession(data.session));
+  }
 })();
