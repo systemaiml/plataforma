@@ -15,8 +15,8 @@
         { k: 'rut', h: 'Rut', type: 'rut', pos: 2, keys: ['rut'] },
         { k: 'edad', h: 'Edad', type: 'int', pos: 3, keys: ['edad'] },
         { k: 'telefono', h: 'Número de contacto', type: 'phone', pos: 4, keys: ['contacto', 'telefono'] },
-        { k: 'observacion', h: 'Observación', pos: 5, keys: ['observacion'], opciones: ['Cumple con RCH', 'No cumple con RCH'] },
-        { k: 'quien_inscribe', h: 'Quién inscribe', pos: 6, keys: ['quien', 'inscribe'] },
+        { k: 'observacion', h: 'Observación', pos: 5, keys: ['observacion'], opciones: ['Cumple', 'No cumple'] },
+        { k: 'quien_inscribe', h: 'Quién inscribe', pos: 6, keys: ['quien', 'inscribe'], opciones: ['Beatríz', 'Claudia', 'Liliana'], otro: 'Otro (escribir)…' },
         { k: 'notas', h: 'Notas', type: 'long', pos: 7, keys: ['notas'] }
       ],
       visibles: ['fecha_inscripcion', 'nombre', 'rut', 'edad', 'telefono', 'observacion', 'quien_inscribe', 'notas'],
@@ -33,7 +33,7 @@
         { k: 'rut', h: 'Rut', type: 'rut', pos: 2, keys: ['rut'] },
         { k: 'edad', h: 'Edad', type: 'int', pos: 3, keys: ['edad'] },
         { k: 'telefono', h: 'Número de contacto', type: 'phone', pos: 4, keys: ['contacto', 'telefono'] },
-        { k: 'observacion', h: 'Observación', pos: 5, keys: ['observacion'], opciones: ['Cumple con RCH', 'No cumple con RCH'] },
+        { k: 'observacion', h: 'Observación', pos: 5, keys: ['observacion'], opciones: ['Cumple', 'No cumple'] },
         { k: 'observacion2', h: 'Observación 2', pos: 6, keys: ['observacion 2', 'observacion2'] },
         { k: 'notas', h: 'Notas', type: 'long', pos: 7, keys: ['notas'] }
       ],

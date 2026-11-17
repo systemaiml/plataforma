@@ -159,7 +159,8 @@
       await loadAll();
       HOJAS.forEach(h => { state.vista[h.id] = vistaInicial(); });
       refresh();
-      toast('Listo: ' + HOJAS.filter(h => data && h.id in data).map(h => `${h.titulo} ${fmt(data[h.id])}`).join(' · '), 6000);
+      const pasados = data && data.pasados_a_beneficiarios ? ` · ${fmt(data.pasados_a_beneficiarios)} inscritos que cumplen pasaron a Beneficiarios` : '';
+      toast('Listo: ' + HOJAS.filter(h => data && h.id in data).map(h => `${h.titulo} ${fmt(data[h.id])}`).join(' · ') + pasados, 7000);
     } catch (e) {
       toast('No se pudo subir el Excel: ' + (e.message || e), 7000);
     }
@@ -415,15 +416,16 @@
       let input;
       const val = mostrar(c, base[c.k]);
       if (c.opciones) {
-        const actual = str(base[c.k]).trim();
+        const raw = str(base[c.k]).trim();
+        const actual = c.opciones.find(o => norm(o) === norm(raw)) || raw;
         const extra = actual && !c.opciones.includes(actual) ? [actual] : [];
         input = el('select', { id: fid },
-          el('option', { value: '', text: '— Sin observación —' }),
+          el('option', { value: '', text: '— Sin dato —' }),
           ...c.opciones.map(o => el('option', { value: o, text: o })),
           ...extra.map(o => el('option', { value: o, text: o + ' (valor actual)' })),
-          el('option', { value: '__otra', text: 'Otra (escribir)…' }));
+          el('option', { value: '__otra', text: c.otro || 'Otra (escribir)…' }));
         input.value = actual;
-        const otra = el('input', { id: fid + '_otra', autocomplete: 'off', placeholder: 'Escribe la observación', 'aria-label': c.h + ' (otra)', hidden: true });
+        const otra = el('input', { id: fid + '_otra', autocomplete: 'off', placeholder: 'Escríbelo aquí', 'aria-label': c.h + ' (otra)', hidden: true });
         input.addEventListener('change', () => { otra.hidden = input.value !== '__otra'; if (!otra.hidden) otra.focus(); });
         grid.append(el('div', { class: 'field' }, label, input, otra));
         return;
@@ -522,6 +524,11 @@
       return setMsg('No se pudo guardar: ' + (e.message || e));
     }
     btn.disabled = false;
+    if (hojaId === 'inscritos') {
+      const antes = state.data.beneficiarios.length;
+      try { state.data.beneficiarios = await loadTabla(HOJA.beneficiarios); } catch (e) { /* se verá al recargar */ }
+      if (state.data.beneficiarios.length > antes) toast('Cumple: también se agregó a Beneficiarios Finales.', 5000);
+    }
     indexar();
     if (state.fichaKey) state.fichaKey = personaKey(rec) || state.fichaKey;
     $('#dlgForm').close(); refresh();
