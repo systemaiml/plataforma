@@ -70,8 +70,7 @@
     ],
     beneficiarios: [
       { id: 'entregada', l: 'Tarjeta entregada', f: r => norm(r.observacion2).includes('entreg') },
-      { id: 'sinimpresa', l: 'Sin tarjeta impresa', f: r => !enHoja('tarjetas', r) && !enHoja('reimpresiones', r) },
-      { id: 'sintel', l: 'Sin teléfono', f: r => sinTelefono(r.telefono) }
+      { id: 'sinimpresa', l: 'Sin tarjeta impresa', f: r => !enHoja('tarjetas', r) && !enHoja('reimpresiones', r) }
     ],
     tarjetas: [
       { id: 'entregada', l: 'Entregadas', f: r => esEntregada(r.entrega) },
