@@ -66,7 +66,6 @@
     inscritos: [
       { id: 'cumple', l: 'Cumple', f: r => esCumple(r.observacion) },
       { id: 'nocumple', l: 'No cumple', f: r => norm(r.observacion).startsWith('no cumple') },
-      { id: 'otraobs', l: 'Otra observación', f: r => !!str(r.observacion).trim() && !esCumple(r.observacion) && !norm(r.observacion).startsWith('no cumple') },
       { id: 'nobenef', l: 'No están en Beneficiarios', f: r => !enHoja('beneficiarios', r) },
       { id: 'sintel', l: 'Sin teléfono', f: r => sinTelefono(r.telefono) }
     ],
