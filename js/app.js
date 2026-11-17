@@ -527,7 +527,9 @@
     if (hojaId === 'inscritos') {
       const antes = state.data.beneficiarios.length;
       try { state.data.beneficiarios = await loadTabla(HOJA.beneficiarios); } catch (e) { /* se verá al recargar */ }
-      if (state.data.beneficiarios.length > antes) toast('Cumple: también se agregó a Beneficiarios Finales.', 5000);
+      const ahora = state.data.beneficiarios.length;
+      if (ahora > antes) toast('Cumple: también se agregó a Beneficiarios Finales.', 5000);
+      else if (ahora < antes) toast('No cumple: se quitó de Beneficiarios Finales.', 5000);
     }
     indexar();
     if (state.fichaKey) state.fichaKey = personaKey(rec) || state.fichaKey;
