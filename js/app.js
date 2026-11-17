@@ -66,7 +66,6 @@
     inscritos: [
       { id: 'cumple', l: 'Cumple', f: r => esCumple(r.observacion) },
       { id: 'nocumple', l: 'No cumple', f: r => norm(r.observacion).startsWith('no cumple') },
-      { id: 'error', l: 'Error de información (RUT mal escrito)', f: r => !rutStatus(r.rut).ok },
       { id: 'sintel', l: 'Sin teléfono', f: r => sinTelefono(r.telefono) }
     ],
     beneficiarios: [
