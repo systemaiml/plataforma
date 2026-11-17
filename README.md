@@ -1,18 +1,18 @@
 # Tarjeta Personas Mayores · Municipalidad de Las Cabras
 
-Plataforma web para consultar, ingresar, modificar y eliminar usuarios del beneficio, usando el Excel «Tarjeta_Personas_Mayores_UNIFICADO.xlsx» (hoja «Unificado»).
+Plataforma web para consultar, ingresar, modificar y eliminar usuarios del beneficio. Los datos viven en una base de datos **Supabase** compartida; cada funcionario entra con correo y contraseña.
 
-## Cómo usarla
-1. Abre la página y pulsa **Cargar Excel** (elige tu archivo .xlsx).
-2. Busca, filtra, ordena y usa **Ver / Editar / Eliminar** en cada fila, o **+ Nuevo usuario**.
-3. Los cambios se guardan automáticamente **en el navegador**. Pulsa **Descargar Excel** para obtener el archivo actualizado.
+## Uso
+1. Abre la página e inicia sesión.
+2. La primera vez, pulsa **Cargar Excel** y elige «Tarjeta_Personas_Mayores_UNIFICADO.xlsx» (hoja «Unificado»). Los registros se guardan en la base; no hay que volver a cargarlo.
+3. Busca, filtra, ordena y usa **Ver / Editar / Eliminar**, o **+ Nuevo usuario**. Los cambios los ven todos.
+4. **Descargar Excel** genera un respaldo actualizado.
 
-## Publicar en GitHub Pages
-1. Sube el contenido de esta carpeta a tu repositorio (rama `main`).
-2. En GitHub: **Settings → Pages → Build and deployment → Deploy from a branch → main / (root)**.
-3. La página queda en `https://TU-USUARIO.github.io/NOMBRE-REPO/`.
+## Configuración
+- `js/config.js`: URL del proyecto y clave **anon/publishable** de Supabase (nunca la `service_role`).
+- Tabla `public.usuarios` con seguridad por filas: solo usuarios con sesión iniciada leen o escriben.
+- Los usuarios se crean en Supabase > Authentication > Users (registro público desactivado).
 
-## Importante: datos personales
-- **No subas el Excel al repositorio** (el `.gitignore` ya lo excluye). El Excel se carga desde tu computador y nunca sale del navegador.
-- GitHub Pages es público en planes gratuitos: cualquiera con el enlace verá la página (vacía, sin datos), pero no tus datos.
-- Los datos viven solo en cada navegador; para compartirlos entre funcionarios, intercambien el Excel descargado.
+## Datos personales
+- **No subas el Excel al repositorio** (el `.gitignore` ya lo excluye).
+- GitHub Pages es público: la página se ve, pero sin sesión no se accede a ningún dato.
