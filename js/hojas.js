@@ -35,11 +35,12 @@
         { k: 'telefono', h: 'Número de contacto', type: 'phone', pos: 4, keys: ['contacto', 'telefono'] },
         { k: 'observacion', h: 'Observación', pos: 5, keys: ['observacion'], opciones: ['Cumple', 'No cumple'] },
         { k: 'observacion2', h: 'Observación 2', pos: 6, keys: ['observacion 2', 'observacion2'] },
-        { k: 'notas', h: 'Notas', type: 'long', pos: 7, keys: ['notas'] }
+        { k: 'notas', h: 'Notas', type: 'long', pos: 7, keys: ['notas'] },
+        { k: 'estado_tarjeta', h: 'Estado tarjeta', pos: 8, keys: ['estado tarjeta', 'estado'], opciones: ['Solicitada', 'Impresa', 'Entregada'], cerrado: true }
       ],
-      visibles: ['fecha_revision', 'nombre', 'rut', 'edad', 'telefono', 'observacion', 'observacion2'],
+      visibles: ['fecha_revision', 'nombre', 'rut', 'edad', 'telefono', 'observacion', 'observacion2', 'estado_tarjeta'],
       filtro: { k: 'observacion2', h: 'Observación 2' },
-      anchos: [14, 38, 13, 7, 18, 16, 30, 30]
+      anchos: [14, 38, 13, 7, 18, 16, 30, 30, 16]
     },
     {
       id: 'tarjetas', tabla: 'tarjetas', titulo: 'Tarjetas Impresas', excel: 'Tarjetas Impresas', singular: 'tarjeta', nuevo: 'Nueva tarjeta',
@@ -106,6 +107,7 @@
     }
     const s = t === 'long' ? String(v).trim() : String(v).replace(/\s+/g, ' ').trim();
     if (t === 'rut') return rutFormat(s);
+    if (campo.cerrado) return campo.opciones.find(o => norm(o) === norm(s)) || '';
     if (t === 'datetext') {
       const m = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/.exec(s);
       if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;

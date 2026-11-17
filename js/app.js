@@ -69,8 +69,9 @@
       { id: 'sintel', l: 'Sin teléfono', f: r => sinTelefono(r.telefono) }
     ],
     beneficiarios: [
-      { id: 'entregada', l: 'Tarjeta entregada', f: r => norm(r.observacion2).includes('entreg') },
-      { id: 'sinimpresa', l: 'Sin tarjeta impresa', f: r => !enHoja('tarjetas', r) && !enHoja('reimpresiones', r) }
+      { id: 'solicitada', l: 'Solicitada', f: r => r.estado_tarjeta === 'Solicitada' },
+      { id: 'impresa', l: 'Impresa', f: r => r.estado_tarjeta === 'Impresa' },
+      { id: 'entregada', l: 'Entregada', f: r => r.estado_tarjeta === 'Entregada' }
     ],
     tarjetas: [
       { id: 'entregada', l: 'Entregadas', f: r => esEntregada(r.entrega) },
@@ -278,6 +279,14 @@
       const tr = el('tr');
       hoja.visibles.forEach(k => {
         const c = hoja.campos.find(x => x.k === k);
+        if (c.cerrado) {
+          const sel = el('select', { class: 'estado', 'data-inline': k, 'data-id': r._id, 'aria-label': c.h + ' de ' + (r.nombre || 'registro') },
+            el('option', { value: '', text: '— Elegir —' }), ...c.opciones.map(o => el('option', { value: o, text: o })));
+          sel.value = r[k] || '';
+          sel.dataset.v = sel.value;
+          tr.append(el('td', null, sel));
+          return;
+        }
         const cls = k === 'nombre' ? 'nombre' : (c.type === 'rut' || c.type === 'phone' || c.type === 'code' || c.type === 'datetext' || k === 'serie') ? 'nw' : (c.type === 'long' ? 'largo' : null);
         tr.append(el('td', { class: cls, text: mostrar(c, r[k]) }));
       });
@@ -420,11 +429,11 @@
           el('option', { value: '', text: '— Sin dato —' }),
           ...c.opciones.map(o => el('option', { value: o, text: o })),
           ...extra.map(o => el('option', { value: o, text: o + ' (valor actual)' })),
-          el('option', { value: '__otra', text: c.otro || 'Otra (escribir)…' }));
+          c.cerrado ? null : el('option', { value: '__otra', text: c.otro || 'Otra (escribir)…' }));
         input.value = actual;
         const otra = el('input', { id: fid + '_otra', autocomplete: 'off', placeholder: 'Escríbelo aquí', 'aria-label': c.h + ' (otra)', hidden: true });
         input.addEventListener('change', () => { otra.hidden = input.value !== '__otra'; if (!otra.hidden) otra.focus(); });
-        grid.append(el('div', { class: 'field' }, label, input, otra));
+        grid.append(el('div', { class: 'field' }, label, input, c.cerrado ? null : otra));
         return;
       }
       if (c.type === 'long') input = el('textarea', { id: fid, rows: '2' });
@@ -473,7 +482,7 @@
     const rec = {};
     hoja.campos.forEach(c => {
       let val = F(c.k).value;
-      if (val === '__otra') val = F(c.k + '_otra').value;
+      if (val === '__otra' && F(c.k + '_otra')) val = F(c.k + '_otra').value;
       rec[c.k] = celda(c, val);
     });
     if (hoja.rutObligatorio && !rec.nombre) return fail('nombre', 'El nombre es obligatorio.');
@@ -624,6 +633,25 @@
     } catch (e) {
       toast('No se pudo eliminar: ' + (e.message || e));
     }
+  });
+  // Cambio directo del estado de la tarjeta desde la tabla
+  $('#tbl').addEventListener('change', async e => {
+    const sel = e.target.closest('select[data-inline]'); if (!sel) return;
+    const hoja = hojaActual(), k = sel.dataset.inline, id = sel.dataset.id, prev = sel.dataset.v;
+    sel.disabled = true;
+    try {
+      const { data, error } = await db.from(hoja.tabla).update({ [k]: sel.value }).eq('id', id).select().single();
+      if (error) throw error;
+      const i = state.data[hoja.id].findIndex(x => String(x._id) === String(id));
+      if (i >= 0) state.data[hoja.id][i] = fromDb(hoja, data);
+      sel.dataset.v = sel.value;
+      toast(`${state.data[hoja.id][i].nombre || 'Registro'}: ${sel.value || 'sin estado'}.`);
+      renderStats(hoja);
+    } catch (err) {
+      sel.value = prev;
+      toast('No se pudo cambiar el estado: ' + (err.message || err), 6000);
+    }
+    sel.disabled = false;
   });
   $('#impConfirm').addEventListener('click', () => { $('#dlgImport').close(); confirmImport(); });
 
