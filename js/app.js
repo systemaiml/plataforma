@@ -216,6 +216,8 @@
       return hoja.campos.some(c => c.k !== 'rut' && norm(mostrar(c, r[c.k])).includes(q));
     });
     const { k, dir } = v.sort;
+    // Sin orden elegido: lo último agregado primero (el Excel se sigue descargando en su orden original)
+    if (!k) rows = rows.slice().sort((a, b) => (b.orden || 0) - (a.orden || 0) || b._id - a._id);
     if (k) {
       const c = hoja.campos.find(x => x.k === k);
       rows = rows.slice().sort((a, b) => {
