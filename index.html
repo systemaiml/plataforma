@@ -14,7 +14,7 @@
 <img class="logo" src="img/logo.png" alt="Municipalidad de Las Cabras">
 <div class="titles">
 <h1>Tarjeta Personas Mayores</h1>
-<p>Registro de beneficiarios · consulta, ingreso, modificación y eliminación</p>
+<p>Inscritos, beneficiarios y tarjetas · consulta, ingreso, modificación y eliminación</p>
 </div>
 <div id="session" hidden>
 <span id="userEmail"></span>
@@ -58,35 +58,51 @@
 </section>
 <section id="emptyState" class="panel empty" hidden>
 <h2>Carga el Excel para comenzar</h2>
-<p>La base de datos está vacía. <span data-admin>Selecciona el archivo <strong>Tarjeta_Personas_Mayores_UNIFICADO.xlsx</strong> (hoja «Unificado»). Se carga <strong>una sola vez</strong> y los datos quedan guardados en la base de datos compartida, disponibles para todos los funcionarios con acceso.</span><span class="noadmin">Pide a un administrador que cargue el Excel.</span></p>
+<p>La base de datos está vacía. <span data-admin>Selecciona el archivo <strong>Tarjeta_Personas_Mayores_Oficial</strong> (.xlsx) con sus hojas «Inscritos», «Beneficiarios Finales», «Tarjetas Impresas» y «Tarjeta re impresas». Se carga <strong>una sola vez</strong> y los datos quedan guardados para todos los funcionarios.</span><span class="noadmin">Pide a un administrador que cargue el Excel.</span></p>
 <div class="row center">
 <button class="btn primary" data-admin data-action="import">Cargar Excel</button>
-<button class="btn ghost" data-action="start-empty">Empezar con un registro vacío</button>
+<button class="btn ghost" data-action="start-empty">Empezar sin datos</button>
 </div>
 </section>
 <div id="app" hidden>
-<section class="stats" id="stats" aria-label="Resumen"></section>
-<section class="panel toolbar">
+<nav class="tabs" id="tabs" role="tablist" aria-label="Secciones"></nav>
+
+<!-- Ficha por persona -->
+<section id="vistaFicha" role="tabpanel" hidden>
+<div class="panel toolbar">
 <div class="field grow">
-<label for="q">Buscar</label>
-<input id="q" type="search" placeholder="Nombre, RUT, teléfono o notas…" autocomplete="off">
+<label for="fq">Buscar persona por nombre o RUT</label>
+<input id="fq" type="search" placeholder="Ej.: 8.904.288-7 o Poblete" autocomplete="off">
 </div>
-<div class="field">
-<label for="fPresente">Presente en</label>
-<select id="fPresente"><option value="">Todos</option></select>
-</div>
-<div class="field">
-<label for="fRsh">Reg. Social de Hogares</label>
-<select id="fRsh"><option value="">Todos</option></select>
-</div>
-<label class="check"><input id="fAlertas" type="checkbox"> Solo con alertas</label>
 <div class="actions">
-<button class="btn primary" data-action="new">+ Nuevo usuario</button>
 <button class="btn" data-admin data-action="import">Cargar Excel</button>
 <button class="btn" data-action="export">Descargar Excel</button>
 </div>
+</div>
+<div id="fichaResultados" class="panel resultados" aria-live="polite"></div>
+<div id="fichaDetalle"></div>
 </section>
-<section class="panel tablepanel">
+
+<!-- Vista de una hoja -->
+<section id="vistaHoja" role="tabpanel" hidden>
+<div class="stats" id="stats" aria-label="Resumen"></div>
+<div class="panel toolbar">
+<div class="field grow">
+<label for="q">Buscar</label>
+<input id="q" type="search" placeholder="Nombre, RUT, teléfono, serie u observación…" autocomplete="off">
+</div>
+<div class="field" id="filtroWrap">
+<label for="filtro" id="filtroLabel">Filtro</label>
+<select id="filtro"><option value="">Todos</option></select>
+</div>
+<div class="actions">
+<button class="btn primary" data-action="new" id="newBtn">+ Nuevo</button>
+<button class="btn" data-admin data-action="import">Cargar Excel</button>
+<button class="btn" data-action="export">Descargar Excel</button>
+</div>
+</div>
+<p id="quickInfo" class="quick" hidden></p>
+<div class="panel tablepanel">
 <div class="tablewrap">
 <table id="tbl">
 <thead></thead>
@@ -105,6 +121,7 @@
 <button class="btn small" id="next">Siguiente ›</button>
 </div>
 </div>
+</div>
 </section>
 </div>
 </main>
@@ -115,56 +132,8 @@
 <!-- Formulario -->
 <dialog id="dlgForm">
 <form id="form" method="dialog" novalidate>
-<h2 id="formTitle">Nuevo usuario</h2>
-<div class="grid">
-<div class="field span2">
-<label for="f_nombre">Nombre completo *</label>
-<input id="f_nombre" name="nombre" required autocomplete="off">
-</div>
-<div class="field">
-<label for="f_rut">RUT *</label>
-<input id="f_rut" name="rut" placeholder="12.345.678-9" required autocomplete="off">
-</div>
-<div class="field">
-<label for="f_edad">Edad</label>
-<input id="f_edad" name="edad" type="number" min="0" max="120">
-</div>
-<div class="field">
-<label for="f_telefono">Teléfono</label>
-<input id="f_telefono" name="telefono" inputmode="tel" autocomplete="off">
-</div>
-<div class="field">
-<label for="f_fecha">Fecha de inscripción</label>
-<input id="f_fecha" name="fecha" type="date">
-</div>
-<div class="field">
-<label for="f_presente">Presente en</label>
-<select id="f_presente" name="presente">
-<option>Solo inscritos</option><option>Solo oficial</option><option>En ambas</option>
-</select>
-</div>
-<div class="field">
-<label for="f_obs">Observación (lista oficial)</label>
-<input id="f_obs" name="obs" autocomplete="off">
-</div>
-<div class="field">
-<label for="f_rsh">Registro Social de Hogares</label>
-<input id="f_rsh" name="rsh" autocomplete="off" list="rshList">
-<datalist id="rshList"></datalist>
-</div>
-<div class="field">
-<label for="f_inscribe">Quién inscribe (lista oficial)</label>
-<input id="f_inscribe" name="inscribe" autocomplete="off">
-</div>
-<div class="field span2">
-<label for="f_notas">Notas</label>
-<textarea id="f_notas" name="notas" rows="2"></textarea>
-</div>
-<div class="field span2">
-<label for="f_alertas">Alertas de revisión <small>(vacía el campo cuando ya esté revisado)</small></label>
-<textarea id="f_alertas" name="alertas" rows="2"></textarea>
-</div>
-</div>
+<h2 id="formTitle">Nuevo registro</h2>
+<div class="grid" id="formGrid"></div>
 <p id="formMsg" class="formmsg" role="alert"></p>
 <div class="row end">
 <button type="button" class="btn ghost" data-close>Cancelar</button>
@@ -175,15 +144,17 @@
 <!-- Ver detalle -->
 <dialog id="dlgView">
 <h2 id="viewTitle"></h2>
+<p id="viewHoja" class="sub"></p>
 <dl id="viewBody" class="detail"></dl>
 <div class="row end">
 <button class="btn ghost" data-close>Cerrar</button>
+<button class="btn" id="viewFicha">Ver ficha de la persona</button>
 <button class="btn primary" id="viewEdit">Editar</button>
 </div>
 </dialog>
 <!-- Confirmar eliminación -->
 <dialog id="dlgDelete">
-<h2>Eliminar usuario</h2>
+<h2>Eliminar registro</h2>
 <p id="delText"></p>
 <div class="row end">
 <button class="btn ghost" data-close>Cancelar</button>
@@ -194,9 +165,11 @@
 <dialog id="dlgImport">
 <h2>Cargar Excel</h2>
 <p id="impText"></p>
+<ul id="impList" class="implist"></ul>
+<p class="sub">Antes de reemplazar se descarga automáticamente un respaldo en Excel con los datos actuales.</p>
 <div class="row end">
 <button class="btn ghost" data-close>Cancelar</button>
-<button class="btn primary" id="impConfirm">Subir a la base de datos</button>
+<button class="btn primary" id="impConfirm">Reemplazar con este Excel</button>
 </div>
 </dialog>
 <div id="toast" role="status" aria-live="polite"></div>
@@ -204,6 +177,7 @@
 <script src="js/config.js"></script>
 <script src="js/jszip.min.js"></script>
 <script src="js/xlsx-mini.js"></script>
+<script src="js/hojas.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

@@ -1,496 +1,611 @@
 (function () {
   'use strict';
 
-  /* ---------- Definición de columnas (coinciden con la hoja «Unificado») ---------- */
-  const COLS = [
-    { k: 'nombre',   h: 'Nombre' },
-    { k: 'rut',      h: 'RUT' },
-    { k: 'edad',     h: 'Edad', type: 'num' },
-    { k: 'telefono', h: 'Teléfono' },
-    { k: 'fecha',    h: 'Fecha inscripción (más antigua)', type: 'date' },
-    { k: 'obs',      h: 'Observación (lista oficial)' },
-    { k: 'rsh',      h: 'Registro Social de Hogares (lista inscritos)' },
-    { k: 'notas',    h: 'Notas (lista inscritos)' },
-    { k: 'inscribe', h: 'Quién inscribe (lista oficial)' },
-    { k: 'presente', h: 'Presente en' },
-    { k: 'vIns',     h: 'Veces en inscritos', type: 'num' },
-    { k: 'vOf',      h: 'Veces en oficial', type: 'num' },
-    { k: 'fIns',     h: 'Filas en archivo inscritos' },
-    { k: 'fOf',      h: 'Filas en archivo oficial' },
-    { k: 'alertas',  h: 'Alertas de revisión' }
-  ];
-  const PRESENTE = ['En ambas', 'Solo inscritos', 'Solo oficial'];
+  const { HOJAS, norm, rutClean, rutFormat, celda, leerLibro } = window.Hojas;
+  const HOJA = Object.fromEntries(HOJAS.map(h => [h.id, h]));
   const CFG = window.APP_CONFIG || {};
   // Si el funcionario llega desde un correo de invitación o recuperación, debe crear su contraseña
   let needPassword = /[#&?]type=(invite|recovery)/.test(location.hash);
   const linkError = (/[#&?]error_description=([^&]+)/.exec(location.hash) || [])[1];
   const db = window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY);
-  // Campos que en la base de datos tienen otro nombre (columnas en minúscula)
-  const DB_KEY = { vIns: 'vins', vOf: 'vof', fIns: 'fins', fOf: 'fof' };
-  const dbKey = k => DB_KEY[k] || k;
-  const WIDTHS = [34, 14, 7, 13, 16, 22, 30, 30, 22, 14, 10, 10, 16, 16, 50];
 
   const $ = (s, r = document) => r.querySelector(s);
+  const vistaInicial = () => ({ q: '', filtro: '', quick: '', sort: { k: null, dir: 1 }, page: 1, pageSize: 25 });
   const state = {
-    rows: [], userId: null, isAdmin: false, loaded: false, lastLoad: 0, sort: { k: null, dir: 1 }, page: 1, pageSize: 25,
-    q: '', fPresente: '', fRsh: '', fAlertas: false,
-    editingId: null, deletingId: null, viewingId: null, pendingImport: null
+    userId: null, isAdmin: false, loaded: false, started: false, lastLoad: 0,
+    tab: 'ficha', data: {}, vista: {}, ruts: {},
+    fichaQ: '', fichaKey: null,
+    editing: null, deleting: null, viewing: null, pendingImport: null, confirmWarn: ''
   };
+  HOJAS.forEach(h => { state.data[h.id] = []; state.vista[h.id] = vistaInicial(); });
 
   /* ---------- Utilidades ---------- */
-  const norm = s => String(s == null ? '' : s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
-  const rutClean = s => String(s || '').replace(/[^0-9kK]/g, '').toUpperCase();
+  const str = v => (v == null ? '' : String(v));
   function rutDv(body) {
     let sum = 0, mul = 2;
     for (let i = body.length - 1; i >= 0; i--) { sum += +body[i] * mul; mul = mul === 7 ? 2 : mul + 1; }
     const r = 11 - (sum % 11);
     return r === 11 ? '0' : r === 10 ? 'K' : String(r);
   }
-  function rutFormat(s) {
-    const c = rutClean(s);
-    if (c.length < 2) return String(s || '').trim();
-    const body = c.slice(0, -1).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
-    return body + '-' + c.slice(-1);
-  }
   function rutStatus(s) {
     const c = rutClean(s);
-    if (c.length < 8 || c.length > 9 || !/^\d+[0-9K]$/.test(c)) return { ok: false, format: false };
+    if (c.length < 7 || c.length > 9 || !/^\d+[0-9K]$/.test(c)) return { ok: false, format: false };
     const dv = rutDv(c.slice(0, -1));
     return { ok: dv === c.slice(-1), format: true, dv };
   }
-  const isoToDisplay = iso => {
-    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || '');
-    return m ? `${m[3]}-${m[2]}-${m[1]}` : '';
-  };
-  const str = v => (v == null ? '' : String(v));
-  function toast(msg) {
+  const isIso = v => /^\d{4}-\d{2}-\d{2}$/.test(str(v));
+  const fechaTexto = v => (isIso(v) ? `${v.slice(8, 10)}-${v.slice(5, 7)}-${v.slice(0, 4)}` : str(v));
+  const mostrar = (campo, v) => (campo.type === 'datetext' ? fechaTexto(v) : v == null ? '' : String(v));
+  const hoyIso = () => { const d = new Date(); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10); };
+  const personaKey = r => { const c = rutClean(r.rut); return c.length >= 7 ? 'r:' + c : (r.nombre ? 'n:' + norm(r.nombre) : null); };
+  const fmt = n => n.toLocaleString('es-CL');
+  const pareceRut = q => /^[\d.\-\s]+[kK]?$/.test(String(q).trim()) && rutClean(q).length >= 3;
+  function toast(msg, ms) {
     const t = $('#toast');
     t.textContent = msg;
     t.classList.add('show');
     clearTimeout(toast.t);
-    toast.t = setTimeout(() => t.classList.remove('show'), 3200);
+    toast.t = setTimeout(() => t.classList.remove('show'), ms || 3400);
   }
   function el(tag, props, ...children) {
     const e = document.createElement(tag);
     if (props) for (const [k, v] of Object.entries(props)) {
-      if (k === 'class') e.className = v; else if (k === 'text') e.textContent = v; else e.setAttribute(k, v);
+      if (v == null || v === false) continue;
+      if (k === 'class') e.className = v; else if (k === 'text') e.textContent = v; else e.setAttribute(k, v === true ? '' : v);
     }
-    children.forEach(c => c != null && e.append(c));
+    children.forEach(c => c != null && c !== false && e.append(c));
     return e;
   }
 
+  /* ---------- Indicadores rápidos por hoja ---------- */
+  const esEntregada = v => isIso(v) || norm(v).includes('entreg');
+  const sinTelefono = v => !str(v).trim() || norm(v).startsWith('sin');
+  const enHoja = (id, r) => state.ruts[id] && state.ruts[id].has(rutClean(r.rut));
+  const RAPIDOS = {
+    inscritos: [
+      { id: 'cumple', l: 'Cumple', f: r => norm(r.observacion) === 'cumple' },
+      { id: 'nocumple', l: 'Con otra observación', f: r => !!str(r.observacion).trim() && norm(r.observacion) !== 'cumple' },
+      { id: 'nobenef', l: 'No están en Beneficiarios', f: r => !enHoja('beneficiarios', r) },
+      { id: 'sintel', l: 'Sin teléfono', f: r => sinTelefono(r.telefono) }
+    ],
+    beneficiarios: [
+      { id: 'entregada', l: 'Tarjeta entregada', f: r => norm(r.observacion2).includes('entreg') },
+      { id: 'sinimpresa', l: 'Sin tarjeta impresa', f: r => !enHoja('tarjetas', r) && !enHoja('reimpresiones', r) },
+      { id: 'sintel', l: 'Sin teléfono', f: r => sinTelefono(r.telefono) }
+    ],
+    tarjetas: [
+      { id: 'entregada', l: 'Entregadas', f: r => esEntregada(r.entrega) },
+      { id: 'pendiente', l: 'Sin entrega registrada', f: r => !str(r.entrega).trim() && !!(r.nombre || r.rut) },
+      { id: 'libre', l: 'Sin persona asignada', f: r => !r.nombre && !r.rut },
+      { id: 'conobs', l: 'Con observación', f: r => !!str(r.observacion).trim() }
+    ],
+    reimpresiones: [
+      { id: 'retirada', l: 'Retiradas', f: r => !!str(r.fecha_retiro).trim() },
+      { id: 'porretirar', l: 'Por retirar', f: r => !str(r.fecha_retiro).trim() }
+    ]
+  };
+
   /* ---------- Persistencia (Supabase) ---------- */
-  function toDb(rec) {
+  function toDb(hoja, rec) {
     const o = {};
-    COLS.forEach(c => {
+    hoja.campos.forEach(c => {
       if (!(c.k in rec)) return;
       let v = rec[c.k];
-      if (c.type === 'date') v = /^\d{4}-\d{2}-\d{2}$/.test(str(v)) ? v : null;
-      else if (c.type === 'num') v = (v === '' || v == null || !isFinite(Number(v))) ? null : Math.round(Number(v));
+      if (c.type === 'int') v = v === '' || v == null || !isFinite(Number(v)) ? null : Math.round(Number(v));
       else v = v == null ? '' : String(v);
-      o[dbKey(c.k)] = v;
-    });
-    return o;
-  }
-  function fromDb(d) {
-    const o = { _id: d.id };
-    COLS.forEach(c => {
-      let v = d[dbKey(c.k)];
-      if (v == null && c.type !== 'num') v = '';
       o[c.k] = v;
     });
+    if ('orden' in rec) o.orden = rec.orden;
     return o;
   }
-  async function loadAll() {
+  function fromDb(hoja, d) {
+    const o = { _id: d.id, orden: d.orden };
+    hoja.campos.forEach(c => { o[c.k] = d[c.k] == null ? (c.type === 'int' ? null : '') : d[c.k]; });
+    return o;
+  }
+  async function loadTabla(hoja) {
     const out = [], step = 1000;
     for (let from = 0; ; from += step) {
-      const { data, error } = await db.from('usuarios').select('*')
-        .order('nombre', { ascending: true }).order('id', { ascending: true })
+      const { data, error } = await db.from(hoja.tabla).select('*')
+        .order('orden', { ascending: true }).order('id', { ascending: true })
         .range(from, from + step - 1);
       if (error) throw error;
       out.push(...data);
       if (data.length < step) break;
     }
-    state.rows = out.map(fromDb);
+    return out.map(d => fromDb(hoja, d));
+  }
+  async function loadAll() {
+    const res = await Promise.all(HOJAS.map(loadTabla));
+    HOJAS.forEach((h, i) => { state.data[h.id] = res[i]; });
+    indexar();
     state.loaded = true;
     state.lastLoad = Date.now();
   }
-  async function dbInsert(rec) {
-    const { data, error } = await db.from('usuarios').insert(toDb(rec)).select().single();
-    if (error) throw error;
-    return fromDb(data);
+  function indexar() {
+    HOJAS.forEach(h => { state.ruts[h.id] = new Set(state.data[h.id].map(r => rutClean(r.rut)).filter(Boolean)); });
   }
-  async function dbUpdate(id, rec) {
-    const { data, error } = await db.from('usuarios').update(toDb(rec)).eq('id', id).select().single();
-    if (error) throw error;
-    return fromDb(data);
-  }
-  async function dbDelete(id) {
-    const { error } = await db.from('usuarios').delete().eq('id', id);
-    if (error) throw error;
-  }
+  const totalRegistros = () => HOJAS.reduce((n, h) => n + state.data[h.id].length, 0);
 
   /* ---------- Importar / exportar Excel ---------- */
-  function cellToField(col, v) {
-    if (v == null || v === '') return col.type === 'num' ? null : '';
-    if (col.type === 'date') {
-      if (typeof v === 'number') return MiniXlsx.serialToIso(v);
-      const s = String(v).trim();
-      const m = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/.exec(s);
-      if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
-      return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : s;
-    }
-    if (col.type === 'num') { const n = Number(v); return isFinite(n) ? n : null; }
-    return String(v).trim();
-  }
-  function sheetToRows(sheet) {
-    const header = (sheet.rows[0] || []).map(norm);
-    const idx = COLS.map((c, i) => { const j = header.indexOf(norm(c.h)); return j >= 0 ? j : -1; });
-    const fallback = idx.every(i => i === -1);
-    const out = [];
-    for (let r = 1; r < sheet.rows.length; r++) {
-      const row = sheet.rows[r];
-      if (!row || row.every(v => v == null || v === '')) continue;
-      const o = {};
-      COLS.forEach((c, i) => { o[c.k] = cellToField(c, row[fallback ? i : idx[i]]); });
-      if (!o.nombre && !o.rut) continue;
-      o.rut = o.rut ? rutFormat(o.rut) : '';
-      out.push(o);
-    }
-    return out;
-  }
   async function handleFile(file) {
     if (!file) return;
     try {
-      const sheets = await MiniXlsx.readXlsx(await file.arrayBuffer());
-      const sheet = sheets.find(s => norm(s.name) === 'unificado')
-        || sheets.find(s => (s.rows[0] || []).some(h => norm(h) === 'rut'));
-      if (!sheet) throw new Error('No encontré una hoja con columna RUT (se espera la hoja «Unificado»).');
-      const rows = sheetToRows(sheet);
-      if (!rows.length) throw new Error('La hoja no tiene filas con datos.');
-      state.pendingImport = rows;
-      if (!state.rows.length) return confirmImport();
-      $('#impText').textContent = `Se encontraron ${rows.length} registros en la hoja «${sheet.name}». Se agregarán los nuevos y se actualizarán los que ya existan (según RUT). No se elimina a nadie. Hay ${state.rows.length} registros en la base de datos. ¿Continuar?`;
+      const libro = await MiniXlsx.readXlsx(await file.arrayBuffer());
+      const { datos, nombres } = leerLibro(libro);
+      const ids = Object.keys(datos);
+      if (!ids.length) throw new Error('No encontré las hojas «Inscritos», «Beneficiarios Finales», «Tarjetas Impresas» ni «Tarjeta re impresas».');
+      state.pendingImport = datos;
+      $('#impText').textContent = `Archivo «${file.name}». Cada hoja encontrada reemplaza por completo a la que hay en la base de datos:`;
+      $('#impList').replaceChildren(...HOJAS.map(h => datos[h.id]
+        ? el('li', null, el('strong', { text: h.titulo }), `: ${fmt(datos[h.id].length)} filas en la hoja «${nombres[h.id].trim()}» (hoy hay ${fmt(state.data[h.id].length)})`)
+        : el('li', null, el('strong', { text: h.titulo }), ': no está en el archivo, no se modifica')));
       $('#dlgImport').showModal();
     } catch (e) {
-      toast('No se pudo leer el Excel: ' + e.message);
+      toast('No se pudo leer el Excel: ' + (e.message || e), 6000);
     }
   }
   async function confirmImport() {
-    const all = state.pendingImport || [];
+    const datos = state.pendingImport;
     state.pendingImport = null;
-    const byRut = new Map();
-    let sinRut = 0;
-    all.forEach(r => { const k = rutClean(r.rut); if (!k) { sinRut++; return; } byRut.set(k, r); });
-    const rows = [...byRut.values()];
-    const repetidos = all.length - sinRut - rows.length;
+    if (!datos) return;
     try {
-      for (let i = 0; i < rows.length; i += 500) {
-        toast(`Subiendo registros… ${Math.min(i + 500, rows.length)} de ${rows.length}`);
-        const { error } = await db.from('usuarios').upsert(rows.slice(i, i + 500).map(toDb), { onConflict: 'rut' });
-        if (error) throw error;
-      }
+      if (totalRegistros()) await exportExcel('Respaldo_antes_de_cargar');
+      toast('Subiendo el Excel a la base de datos…', 20000);
+      const { data, error } = await db.rpc('reemplazar_hojas', { datos });
+      if (error) throw error;
       await loadAll();
-      state.page = 1; refresh();
-      let msg = `Listo: ${rows.length} registros guardados en la base de datos.`;
-      if (repetidos) msg += ` ${repetidos} con RUT repetido (se usó el último).`;
-      if (sinRut) msg += ` ${sinRut} sin RUT (omitidos).`;
-      toast(msg);
+      HOJAS.forEach(h => { state.vista[h.id] = vistaInicial(); });
+      refresh();
+      toast('Listo: ' + HOJAS.filter(h => data && h.id in data).map(h => `${h.titulo} ${fmt(data[h.id])}`).join(' · '), 6000);
     } catch (e) {
-      toast('No se pudo subir el Excel: ' + (e.message || e));
+      toast('No se pudo subir el Excel: ' + (e.message || e), 7000);
     }
   }
-  async function exportExcel() {
-    const data = state.rows.map(r => COLS.map(c => {
-      const v = r[c.k];
-      if (c.k === 'telefono' && /^\d{1,15}$/.test(str(v))) return Number(v);
-      return v === '' ? null : v;
+  function valorExcel(c, v) {
+    if (v == null || v === '') return null;
+    if (c.type === 'int') return Number(v);
+    if ((c.type === 'phone' || c.type === 'code') && /^\d{1,15}$/.test(str(v))) return Number(v);
+    return v;
+  }
+  async function exportExcel(prefijo) {
+    const resumen = [['Hoja', 'Registros']].concat(HOJAS.map(h => [h.excel, state.data[h.id].length]))
+      .concat([[], ['Exportado el', new Date().toLocaleString('es-CL')]]);
+    const hojas = HOJAS.map(h => ({
+      name: h.excel,
+      header: h.campos.map(c => c.h),
+      rows: state.data[h.id].map(r => h.campos.map(c => valorExcel(c, r[c.k]))),
+      widths: h.anchos,
+      dateCols: h.campos.map((c, i) => (c.type === 'datetext' ? i : -1)).filter(i => i >= 0),
+      freeze: true, filter: true
     }));
-    const count = v => state.rows.filter(r => r.presente === v).length;
-    const resumen = [
-      ['Personas únicas (por RUT)', state.rows.length],
-      ['En ambas listas', count('En ambas')],
-      ['Solo en lista de inscritos', count('Solo inscritos')],
-      ['Solo en lista oficial', count('Solo oficial')],
-      ['Personas con alertas de revisión', state.rows.filter(r => str(r.alertas).trim()).length],
-      ['Exportado el', new Date().toLocaleString('es-CL')]
-    ];
-    const blob = await MiniXlsx.writeXlsx([
-      { name: 'Resumen', rows: resumen, widths: [38, 22] },
-      { name: 'Unificado', header: COLS.map(c => c.h), rows: data, widths: WIDTHS, dateCols: [4], freeze: true, filter: true }
-    ]);
+    const blob = await MiniXlsx.writeXlsx([...hojas, { name: 'Resumen', rows: resumen, widths: [26, 16] }]);
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `Tarjeta_Personas_Mayores_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    a.download = `${prefijo || 'Tarjeta_Personas_Mayores_Oficial'}_${hoyIso()}.xlsx`;
     document.body.append(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-    toast('Excel descargado.');
+    if (!prefijo) toast('Excel descargado.');
   }
 
-  /* ---------- Filtros, orden y paginación ---------- */
-  function filtered() {
-    const q = norm(state.q), qr = rutClean(state.q);
-    let rows = state.rows.filter(r => {
-      if (state.fPresente && r.presente !== state.fPresente) return false;
-      if (state.fRsh && norm(r.rsh) !== state.fRsh) return false;
-      if (state.fAlertas && !str(r.alertas).trim()) return false;
+  /* ---------- Pestañas ---------- */
+  function renderTabs() {
+    const tabs = [{ id: 'ficha', l: 'Buscar persona' }].concat(HOJAS.map(h => ({ id: h.id, l: h.titulo, n: state.data[h.id].length })));
+    $('#tabs').replaceChildren(...tabs.map(t => el('button', {
+      type: 'button', role: 'tab', class: 'tab', 'data-tab': t.id, id: 'tab-' + t.id,
+      'aria-selected': state.tab === t.id ? 'true' : 'false', tabindex: state.tab === t.id ? '0' : '-1'
+    }, t.l, t.n != null ? el('span', { class: 'tn', text: fmt(t.n) }) : null)));
+  }
+  function setTab(id) {
+    state.tab = id;
+    refresh();
+    if (id === 'ficha') $('#fq').focus();
+  }
+
+  /* ---------- Vista de hoja: filtros, orden y paginación ---------- */
+  const hojaActual = () => HOJA[state.tab];
+  function filtrados(hoja) {
+    const v = state.vista[hoja.id];
+    const q = norm(v.q), qr = rutClean(v.q);
+    const rapido = v.quick && RAPIDOS[hoja.id].find(x => x.id === v.quick);
+    let rows = state.data[hoja.id].filter(r => {
+      if (rapido && !rapido.f(r)) return false;
+      if (hoja.filtro && v.filtro && norm(r[hoja.filtro.k]) !== v.filtro) return false;
       if (!q) return true;
-      return norm(r.nombre).includes(q) || (qr.length >= 3 && rutClean(r.rut).includes(qr))
-        || norm(r.telefono).includes(q) || norm(r.notas).includes(q);
+      if (pareceRut(v.q) && rutClean(r.rut).includes(qr)) return true;
+      return hoja.campos.some(c => c.k !== 'rut' && norm(mostrar(c, r[c.k])).includes(q));
     });
-    const { k, dir } = state.sort;
+    const { k, dir } = v.sort;
     if (k) {
-      const col = COLS.find(c => c.k === k);
+      const c = hoja.campos.find(x => x.k === k);
       rows = rows.slice().sort((a, b) => {
         let x = a[k], y = b[k];
-        if (col.type === 'num') { x = x == null ? -Infinity : x; y = y == null ? -Infinity : y; return (x - y) * dir; }
+        if (c.type === 'int') { x = x == null ? -Infinity : x; y = y == null ? -Infinity : y; return (x - y) * dir; }
+        if (str(x) === '' && str(y) !== '') return 1;
+        if (str(y) === '' && str(x) !== '') return -1;
         return str(x).localeCompare(str(y), 'es', { sensitivity: 'base', numeric: true }) * dir;
       });
     }
     return rows;
   }
 
-  const VISIBLE = [
-    { k: 'nombre', h: 'Nombre' }, { k: 'rut', h: 'RUT' }, { k: 'edad', h: 'Edad' },
-    { k: 'telefono', h: 'Teléfono' }, { k: 'fecha', h: 'Inscripción' },
-    { k: 'obs', h: 'Observación' }, { k: 'rsh', h: 'Reg. Social Hogares' },
-    { k: 'presente', h: 'Presente en' }, { k: 'alertas', h: 'Alertas' }
-  ];
-
-  function renderHead() {
+  function renderStats(hoja) {
+    const v = state.vista[hoja.id], rows = state.data[hoja.id];
+    const items = [{ id: '', l: 'Total', n: rows.length }].concat(RAPIDOS[hoja.id].map(x => ({ id: x.id, l: x.l, n: rows.filter(x.f).length })));
+    $('#stats').replaceChildren(...items.map(x => el('button', {
+      type: 'button', class: 'stat' + (v.quick === x.id ? ' on' : ''), 'data-quick': x.id, 'aria-pressed': v.quick === x.id ? 'true' : 'false'
+    }, el('span', { class: 'n', text: fmt(x.n) }), el('span', { class: 'l', text: x.l }))));
+    const rapido = v.quick && RAPIDOS[hoja.id].find(x => x.id === v.quick);
+    $('#quickInfo').hidden = !rapido;
+    if (rapido) $('#quickInfo').replaceChildren(`Mostrando solo: ${rapido.l}. `, el('button', { type: 'button', class: 'linkbtn', 'data-quick': '', text: 'Quitar filtro' }));
+  }
+  function renderFiltro(hoja) {
+    const v = state.vista[hoja.id];
+    $('#filtroWrap').hidden = !hoja.filtro;
+    if (!hoja.filtro) return;
+    $('#filtroLabel').textContent = hoja.filtro.h;
+    const map = new Map();
+    state.data[hoja.id].forEach(r => { const n = norm(r[hoja.filtro.k]); if (n && !map.has(n)) map.set(n, str(r[hoja.filtro.k]).trim()); });
+    const opts = [...map].sort((a, b) => a[1].localeCompare(b[1], 'es'));
+    $('#filtro').replaceChildren(el('option', { value: '', text: 'Todos' }), ...opts.map(([n, l]) => el('option', { value: n, text: l })));
+    $('#filtro').value = map.has(v.filtro) ? v.filtro : '';
+  }
+  function renderHead(hoja) {
+    const v = state.vista[hoja.id];
     const tr = el('tr');
-    VISIBLE.forEach(c => {
-      const arrow = state.sort.k === c.k ? (state.sort.dir === 1 ? '▲' : '▼') : '';
-      const btn = el('button', { type: 'button', 'data-sort': c.k, text: c.h }, arrow ? el('span', { text: arrow, 'aria-hidden': 'true' }) : null);
-      const th = el('th', { scope: 'col' }, btn);
-      if (state.sort.k === c.k) th.setAttribute('aria-sort', state.sort.dir === 1 ? 'ascending' : 'descending');
+    hoja.visibles.forEach(k => {
+      const c = hoja.campos.find(x => x.k === k);
+      const arrow = v.sort.k === k ? (v.sort.dir === 1 ? '▲' : '▼') : '';
+      const th = el('th', { scope: 'col', 'aria-sort': v.sort.k === k ? (v.sort.dir === 1 ? 'ascending' : 'descending') : null },
+        el('button', { type: 'button', 'data-sort': k, text: c.h }, arrow ? el('span', { text: arrow, 'aria-hidden': 'true' }) : null));
       tr.append(th);
     });
-    tr.append(el('th', { scope: 'col', class: 'sr-th', text: 'Acciones', style: 'text-align:right' }));
-    const thead = $('#tbl thead'); thead.replaceChildren(tr);
+    tr.append(el('th', { scope: 'col', style: 'text-align:right', text: 'Acciones' }));
+    $('#tbl thead').replaceChildren(tr);
   }
-
-  function renderBody() {
-    const all = filtered();
-    const pages = Math.max(1, Math.ceil(all.length / state.pageSize));
-    state.page = Math.min(state.page, pages);
-    const start = (state.page - 1) * state.pageSize;
-    const slice = all.slice(start, start + state.pageSize);
+  function renderBody(hoja) {
+    const v = state.vista[hoja.id];
+    const all = filtrados(hoja);
+    const pages = Math.max(1, Math.ceil(all.length / v.pageSize));
+    v.page = Math.min(Math.max(1, v.page), pages);
+    const slice = all.slice((v.page - 1) * v.pageSize, v.page * v.pageSize);
     const tbody = $('#tbl tbody');
     tbody.replaceChildren();
-    if (!slice.length) {
-      tbody.append(el('tr', null, el('td', { colspan: VISIBLE.length + 1, class: 'vacio', text: 'No hay registros que coincidan con la búsqueda.' })));
-    }
+    if (!slice.length) tbody.append(el('tr', null, el('td', { colspan: hoja.visibles.length + 1, class: 'vacio', text: 'No hay registros que coincidan con la búsqueda.' })));
     slice.forEach(r => {
-      const pill = el('span', { class: 'pill ' + (r.presente === 'En ambas' ? 'ambas' : r.presente === 'Solo oficial' ? 'of' : 'ins'), text: r.presente || '—' });
-      const al = str(r.alertas).trim();
-      const alCell = al ? el('span', { class: 'alerta', title: al, text: 'Revisar' }) : document.createTextNode('');
-      const acc = el('td', { class: 'acc' },
-        el('button', { class: 'btn small', 'data-act': 'view', 'data-id': r._id, 'aria-label': 'Ver ' + str(r.nombre), text: 'Ver' }),
-        el('button', { class: 'btn small', 'data-act': 'edit', 'data-id': r._id, 'aria-label': 'Editar ' + str(r.nombre), text: 'Editar' }),
-        state.isAdmin ? el('button', { class: 'btn small danger', 'data-act': 'del', 'data-id': r._id, 'aria-label': 'Eliminar ' + str(r.nombre), text: 'Eliminar' }) : null);
-      tbody.append(el('tr', null,
-        el('td', { class: 'nombre', text: str(r.nombre) }),
-        el('td', { class: 'rut', text: str(r.rut) }),
-        el('td', { text: r.edad == null ? '' : r.edad }),
-        el('td', { class: 'nw', text: str(r.telefono) }),
-        el('td', { class: 'nw', text: isoToDisplay(r.fecha) }),
-        el('td', { text: str(r.obs) }),
-        el('td', { text: str(r.rsh) }),
-        el('td', null, pill),
-        el('td', null, alCell),
-        acc));
+      const tr = el('tr');
+      hoja.visibles.forEach(k => {
+        const c = hoja.campos.find(x => x.k === k);
+        const cls = k === 'nombre' ? 'nombre' : (c.type === 'rut' || c.type === 'phone' || c.type === 'code' || c.type === 'datetext' || k === 'serie') ? 'nw' : (c.type === 'long' ? 'largo' : null);
+        tr.append(el('td', { class: cls, text: mostrar(c, r[k]) }));
+      });
+      const nom = str(r.nombre) || str(r.serie) || 'registro';
+      tr.append(el('td', { class: 'acc' },
+        el('button', { class: 'btn small', 'data-act': 'view', 'data-id': r._id, 'aria-label': 'Ver ' + nom, text: 'Ver' }),
+        el('button', { class: 'btn small', 'data-act': 'edit', 'data-id': r._id, 'aria-label': 'Editar ' + nom, text: 'Editar' }),
+        state.isAdmin ? el('button', { class: 'btn small danger', 'data-act': 'del', 'data-id': r._id, 'aria-label': 'Eliminar ' + nom, text: 'Eliminar' }) : null));
+      tbody.append(tr);
     });
-    $('#count').textContent = all.length === state.rows.length
-      ? `${all.length} registros`
-      : `${all.length} de ${state.rows.length} registros`;
-    $('#pageInfo').textContent = `Página ${state.page} de ${pages}`;
-    $('#prev').disabled = state.page <= 1;
-    $('#next').disabled = state.page >= pages;
+    const total = state.data[hoja.id].length;
+    $('#count').textContent = all.length === total ? `${fmt(all.length)} registros` : `${fmt(all.length)} de ${fmt(total)} registros`;
+    $('#pageInfo').textContent = `Página ${v.page} de ${pages}`;
+    $('#prev').disabled = v.page <= 1;
+    $('#next').disabled = v.page >= pages;
+  }
+  function renderHoja() {
+    const hoja = hojaActual();
+    const v = state.vista[hoja.id];
+    $('#q').value = v.q;
+    $('#pageSize').value = String(v.pageSize);
+    $('#newBtn').textContent = '+ ' + hoja.nuevo;
+    renderStats(hoja); renderFiltro(hoja); renderHead(hoja); renderBody(hoja);
   }
 
-  function renderStats() {
-    const c = v => state.rows.filter(r => r.presente === v).length;
-    const items = [
-      ['Personas únicas', state.rows.length, () => setFilters({})],
-      ['En ambas listas', c('En ambas'), () => setFilters({ presente: 'En ambas' })],
-      ['Solo inscritos', c('Solo inscritos'), () => setFilters({ presente: 'Solo inscritos' })],
-      ['Solo oficial', c('Solo oficial'), () => setFilters({ presente: 'Solo oficial' })],
-      ['Con alertas de revisión', state.rows.filter(r => str(r.alertas).trim()).length, () => setFilters({ alertas: true })]
-    ];
-    $('#stats').replaceChildren(...items.map(([l, n, fn]) => {
-      const b = el('button', { type: 'button', class: 'stat' }, el('span', { class: 'n', text: n.toLocaleString('es-CL') }), el('span', { class: 'l', text: l }));
-      b.addEventListener('click', fn);
-      return b;
-    }));
-  }
-  function setFilters({ presente = '', alertas = false }) {
-    state.fPresente = presente; state.fAlertas = alertas; state.fRsh = ''; state.q = ''; state.page = 1;
-    $('#fPresente').value = presente; $('#fAlertas').checked = alertas; $('#fRsh').value = ''; $('#q').value = '';
-    renderBody();
-  }
-
-  function renderFilterOptions() {
-    const sel = $('#fPresente');
-    sel.replaceChildren(el('option', { value: '', text: 'Todos' }), ...PRESENTE.map(p => el('option', { value: p, text: p })));
-    sel.value = state.fPresente;
+  /* ---------- Ficha por persona ---------- */
+  function personas() {
     const map = new Map();
-    state.rows.forEach(r => { const n = norm(r.rsh); if (n && !map.has(n)) map.set(n, str(r.rsh).trim()); });
-    const rsel = $('#fRsh');
-    rsel.replaceChildren(el('option', { value: '', text: 'Todos' }), ...[...map].sort((a, b) => a[1].localeCompare(b[1], 'es')).map(([n, label]) => el('option', { value: n, text: label })));
-    rsel.value = map.has(state.fRsh) ? state.fRsh : '';
-    $('#rshList').replaceChildren(...[...map.values()].map(v => el('option', { value: v })));
+    HOJAS.forEach(h => state.data[h.id].forEach(r => {
+      const key = personaKey(r);
+      if (!key) return;
+      let p = map.get(key);
+      if (!p) { p = { key, nombre: '', rut: '', hojas: {} }; map.set(key, p); }
+      if (!p.nombre && r.nombre) p.nombre = r.nombre;
+      if (!p.rut && r.rut) p.rut = r.rut;
+      (p.hojas[h.id] = p.hojas[h.id] || []).push(r);
+    }));
+    return map;
+  }
+  function renderFicha() {
+    const q = norm(state.fichaQ), qr = rutClean(state.fichaQ);
+    const res = $('#fichaResultados'), det = $('#fichaDetalle');
+    const mapa = personas();
+    if (state.fichaKey && mapa.has(state.fichaKey)) {
+      res.hidden = true;
+      det.replaceChildren(fichaDetalle(mapa.get(state.fichaKey)));
+      return;
+    }
+    state.fichaKey = null;
+    det.replaceChildren();
+    res.hidden = false;
+    if (q.length < 2) {
+      res.replaceChildren(el('p', { class: 'ayuda', text: `Escribe al menos 2 letras del nombre o parte del RUT. Se busca en las 4 hojas a la vez (${fmt(mapa.size)} personas registradas).` }));
+      return;
+    }
+    const hits = [...mapa.values()].filter(p =>
+      (pareceRut(state.fichaQ) && rutClean(p.rut).includes(qr)) ||
+      HOJAS.some(h => (p.hojas[h.id] || []).some(r => norm(r.nombre).includes(q))));
+    hits.sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
+    if (!hits.length) { res.replaceChildren(el('p', { class: 'ayuda', text: 'No se encontró a nadie con esa búsqueda.' })); return; }
+    const lista = el('ul', { class: 'personas' }, ...hits.slice(0, 50).map(p => el('li', null,
+      el('button', { type: 'button', class: 'persona', 'data-persona': p.key },
+        el('span', { class: 'pn', text: p.nombre || '(sin nombre)' }),
+        el('span', { class: 'pr', text: p.rut || 'sin RUT' }),
+        el('span', { class: 'badges' }, ...HOJAS.map(h => el('span', { class: 'badge' + (p.hojas[h.id] ? ' si' : ''), text: (p.hojas[h.id] ? '✓ ' : '✗ ') + h.titulo })))))));
+    res.replaceChildren(el('p', { class: 'ayuda', text: hits.length > 50 ? `${fmt(hits.length)} personas encontradas; se muestran las primeras 50. Escribe más para afinar.` : `${hits.length} ${hits.length === 1 ? 'persona encontrada' : 'personas encontradas'}.` }), lista);
+  }
+  function fichaDetalle(p) {
+    const wrap = el('div', { class: 'ficha' });
+    wrap.append(el('div', { class: 'panel fichahead' },
+      el('div', null, el('h2', { text: p.nombre || '(sin nombre)' }), el('p', { class: 'sub', text: p.rut ? 'RUT ' + p.rut : 'Sin RUT' })),
+      el('button', { type: 'button', class: 'btn', 'data-action': 'ficha-volver', text: '‹ Volver a la búsqueda' })));
+    HOJAS.forEach(h => {
+      const recs = p.hojas[h.id] || [];
+      const sec = el('section', { class: 'panel fichasec' + (recs.length ? '' : ' vacia') },
+        el('h3', null, h.titulo, el('span', { class: 'badge' + (recs.length ? ' si' : ''), text: recs.length ? (recs.length > 1 ? `${recs.length} registros` : 'Sí') : 'No está' })));
+      recs.forEach(r => {
+        sec.append(el('dl', { class: 'detail' }, ...h.campos.flatMap(c => [el('dt', { text: c.h }), el('dd', { text: mostrar(c, r[c.k]) || '—' })])));
+        sec.append(el('div', { class: 'row end' },
+          el('button', { type: 'button', class: 'btn small', 'data-act': 'edit', 'data-hoja': h.id, 'data-id': r._id, text: 'Editar' }),
+          state.isAdmin ? el('button', { type: 'button', class: 'btn small danger', 'data-act': 'del', 'data-hoja': h.id, 'data-id': r._id, text: 'Eliminar' }) : null));
+      });
+      if (!recs.length) {
+        sec.append(el('div', { class: 'row' }, el('button', { type: 'button', class: 'btn small', 'data-action': 'ficha-agregar', 'data-hoja': h.id, text: `+ Agregar a ${h.titulo}` })));
+      }
+      wrap.append(sec);
+    });
+    return wrap;
+  }
+  function abrirFicha(r) {
+    const key = personaKey(r);
+    if (!key) return toast('Este registro no tiene nombre ni RUT.');
+    state.fichaKey = key;
+    state.fichaQ = r.rut || r.nombre || '';
+    setTab('ficha');
+    window.scrollTo(0, 0);
   }
 
   function refresh() {
     const ready = !!state.userId && state.loaded;
-    const has = ready && (state.rows.length > 0 || state.started);
+    const has = ready && (totalRegistros() > 0 || state.started);
     $('#emptyState').hidden = !ready || has;
     $('#app').hidden = !has;
     if (!has) return;
-    renderStats(); renderFilterOptions(); renderHead(); renderBody();
+    renderTabs();
+    $('#vistaFicha').hidden = state.tab !== 'ficha';
+    $('#vistaHoja').hidden = state.tab === 'ficha';
+    $('#vistaFicha').setAttribute('aria-labelledby', 'tab-ficha');
+    $('#vistaHoja').setAttribute('aria-labelledby', 'tab-' + state.tab);
+    if (state.tab === 'ficha') { $('#fq').value = state.fichaQ; renderFicha(); } else renderHoja();
   }
 
   /* ---------- Formulario ---------- */
-  const F = id => $('#f_' + id);
-  const FIELDS = ['nombre', 'rut', 'edad', 'telefono', 'fecha', 'presente', 'obs', 'rsh', 'inscribe', 'notas', 'alertas'];
-
-  function openForm(id) {
-    state.editingId = id;
-    const r = id ? state.rows.find(x => x._id === id) : null;
-    $('#formTitle').textContent = r ? 'Modificar usuario' : 'Nuevo usuario';
-    FIELDS.forEach(k => { F(k).value = r ? (r[k] == null ? '' : r[k]) : (k === 'presente' ? 'Solo inscritos' : ''); F(k).removeAttribute('aria-invalid'); });
-    if (!r) F('fecha').value = new Date().toISOString().slice(0, 10);
+  const buscar = (hojaId, id) => state.data[hojaId].find(x => String(x._id) === String(id));
+  function sugerencias(hoja, k) {
+    const set = new Map();
+    state.data[hoja.id].forEach(r => { const n = norm(r[k]); if (n && !set.has(n) && !isIso(r[k])) set.set(n, str(r[k]).trim()); });
+    return [...set.values()].slice(0, 200);
+  }
+  function openForm(hojaId, id, prefill) {
+    const hoja = HOJA[hojaId];
+    const r = id ? buscar(hojaId, id) : null;
+    state.editing = { hoja: hojaId, id: r ? r._id : null };
+    state.confirmWarn = '';
+    $('#formTitle').textContent = (r ? 'Modificar ' + hoja.singular : hoja.nuevo) + ' · ' + hoja.titulo;
+    const grid = $('#formGrid');
+    grid.replaceChildren();
+    const base = r || Object.assign(valoresNuevos(hoja), prefill || {});
+    hoja.campos.forEach(c => {
+      const fid = 'f_' + c.k;
+      const req = c.k === 'nombre' && hoja.rutObligatorio || c.k === 'rut' && hoja.rutObligatorio;
+      const label = el('label', { for: fid, text: c.h + (req ? ' *' : '') });
+      let input;
+      const val = mostrar(c, base[c.k]);
+      if (c.type === 'long') input = el('textarea', { id: fid, rows: '2' });
+      else if (c.type === 'int') input = el('input', { id: fid, type: 'number', min: '0', max: '120' });
+      else {
+        input = el('input', { id: fid, autocomplete: 'off', inputmode: c.type === 'phone' ? 'tel' : null, placeholder: c.type === 'rut' ? '12.345.678-9' : c.type === 'datetext' ? 'dd-mm-aaaa o texto' : null });
+        if (['observacion', 'observacion2', 'organizacion', 'quien_inscribe'].includes(c.k)) {
+          const dl = el('datalist', { id: 'dl_' + c.k }, ...sugerencias(hoja, c.k).map(s => el('option', { value: s })));
+          input.setAttribute('list', 'dl_' + c.k);
+          label.append(dl);
+        }
+      }
+      input.value = val;
+      const field = el('div', { class: 'field' + (c.k === 'nombre' || c.type === 'long' ? ' span2' : '') }, label);
+      if (c.type === 'datetext') {
+        field.append(el('div', { class: 'inline' }, input, el('button', { type: 'button', class: 'btn small', 'data-hoy': fid, text: 'Hoy' })));
+      } else field.append(input);
+      grid.append(field);
+    });
     setMsg('');
     $('#dlgForm').showModal();
-    F('nombre').focus();
+    const first = $('#f_nombre'); if (first) first.focus();
+  }
+  function valoresNuevos(hoja) {
+    const o = {};
+    hoja.campos.forEach(c => { o[c.k] = c.type === 'int' ? null : ''; });
+    if (hoja.id === 'inscritos') o.fecha_inscripcion = hoyIso();
+    if (hoja.id === 'beneficiarios') o.fecha_revision = hoyIso();
+    if (hoja.id === 'reimpresiones') o.fecha_retiro = '';
+    if (hoja.id === 'tarjetas') {
+      const max = state.data.tarjetas.reduce((m, r) => (/^\d+$/.test(r.numero) ? Math.max(m, +r.numero) : m), 0);
+      o.numero = String(max + 1);
+    }
+    return o;
   }
   function setMsg(text, warn) {
     const m = $('#formMsg'); m.textContent = text; m.classList.toggle('warn', !!warn);
   }
   async function submitForm(ev) {
     ev.preventDefault();
-    FIELDS.forEach(k => F(k).removeAttribute('aria-invalid'));
-    const v = {}; FIELDS.forEach(k => { v[k] = F(k).value.trim(); });
+    const { hoja: hojaId, id } = state.editing;
+    const hoja = HOJA[hojaId];
+    const F = k => $('#f_' + k);
+    hoja.campos.forEach(c => F(c.k).removeAttribute('aria-invalid'));
     const fail = (k, msg) => { F(k).setAttribute('aria-invalid', 'true'); F(k).focus(); setMsg(msg); };
-    if (!v.nombre) return fail('nombre', 'El nombre es obligatorio.');
-    if (!v.rut) return fail('rut', 'El RUT es obligatorio.');
-    const st = rutStatus(v.rut);
-    if (!st.format) return fail('rut', 'El RUT no tiene un formato válido (ejemplo: 12.345.678-9).');
-    const rutKey = rutClean(v.rut);
-    const dup = state.rows.find(r => rutClean(r.rut) === rutKey && r._id !== state.editingId);
-    if (dup) return fail('rut', `Ya existe una persona con ese RUT: ${dup.nombre}.`);
-    let edad = null;
-    if (v.edad !== '') {
-      edad = Number(v.edad);
-      if (!Number.isInteger(edad) || edad < 0 || edad > 120) return fail('edad', 'La edad debe ser un número entero entre 0 y 120.');
+    const rec = {};
+    hoja.campos.forEach(c => { rec[c.k] = celda(c, F(c.k).value); });
+    if (hoja.rutObligatorio && !rec.nombre) return fail('nombre', 'El nombre es obligatorio.');
+    if (hoja.rutObligatorio && !rec.rut) return fail('rut', 'El RUT es obligatorio.');
+    if (!hoja.rutObligatorio && !rec.nombre && !rec.rut && !rec.serie && !rec.identificador) return fail('nombre', 'Completa al menos el nombre, el RUT, el N° de serie o el identificador.');
+    const edadTxt = F('edad') ? F('edad').value.trim() : '';
+    if (edadTxt !== '' && (!Number.isInteger(Number(edadTxt)) || +edadTxt < 0 || +edadTxt > 120)) return fail('edad', 'La edad debe ser un número entero entre 0 y 120.');
+    // Avisos que se pueden aceptar volviendo a pulsar Guardar
+    const avisos = [];
+    if (rec.rut) {
+      const st = rutStatus(rec.rut);
+      if (!st.format) return fail('rut', 'El RUT no tiene un formato válido (ejemplo: 12.345.678-9).');
+      rec.rut = rutFormat(rec.rut);
+      if (!st.ok) avisos.push(`el dígito verificador del RUT no coincide (debería ser ${st.dv})`);
+      const dup = state.data[hojaId].find(r => rutClean(r.rut) === rutClean(rec.rut) && r._id !== id);
+      if (dup) avisos.push(`ya existe ${dup.nombre || 'un registro'} con ese RUT en ${hoja.titulo}`);
     }
-    v.rut = rutFormat(v.rut);
-    let alertas = v.alertas;
-    if (!st.ok) {
-      const note = `Dígito verificador no coincide (debería ser ${st.dv})`;
-      if (!alertas.includes('Dígito verificador')) alertas = alertas ? alertas + '; ' + note : note;
+    if (hojaId === 'tarjetas' && rec.serie) {
+      const dupS = state.data.tarjetas.find(r => norm(r.serie) === norm(rec.serie) && r._id !== id);
+      if (dupS) avisos.push(`el N° de serie ya está asignado a ${dupS.nombre || 'otra tarjeta'}`);
     }
-    const rec = {
-      nombre: v.nombre, rut: v.rut, edad, telefono: v.telefono, fecha: v.fecha, presente: v.presente,
-      obs: v.obs, rsh: v.rsh, inscribe: v.inscribe, notas: v.notas, alertas
-    };
+    const firma = avisos.join('|');
+    if (avisos.length && state.confirmWarn !== firma) {
+      state.confirmWarn = firma;
+      return setMsg('Atención: ' + avisos.join('; ') + '. Revisa los datos o pulsa «Guardar» otra vez para guardar de todos modos.', true);
+    }
     const btn = $('#saveBtn');
     btn.disabled = true;
     try {
-      if (state.editingId) {
-        const row = await dbUpdate(state.editingId, rec);
-        const i = state.rows.findIndex(x => x._id === state.editingId);
-        if (i >= 0) state.rows[i] = row;
-        toast('Usuario modificado.');
+      if (id) {
+        const { data, error } = await db.from(hoja.tabla).update(toDb(hoja, rec)).eq('id', id).select().single();
+        if (error) throw error;
+        const i = state.data[hojaId].findIndex(x => x._id === id);
+        if (i >= 0) state.data[hojaId][i] = fromDb(hoja, data);
+        toast('Registro modificado.');
       } else {
-        Object.assign(rec, { vIns: 0, vOf: 0, fIns: '', fOf: '' });
-        state.rows.unshift(await dbInsert(rec));
-        toast('Usuario ingresado.');
+        rec.orden = state.data[hojaId].reduce((m, r) => Math.max(m, r.orden || 0), 0) + 1;
+        const { data, error } = await db.from(hoja.tabla).insert(toDb(hoja, rec)).select().single();
+        if (error) throw error;
+        state.data[hojaId].push(fromDb(hoja, data));
+        toast(`Registro agregado a ${hoja.titulo}.`);
       }
     } catch (e) {
       btn.disabled = false;
-      if (e && e.code === '23505') return fail('rut', 'Ya existe una persona con ese RUT.');
       return setMsg('No se pudo guardar: ' + (e.message || e));
     }
     btn.disabled = false;
-    if (!st.ok) toast('Guardado. El dígito verificador del RUT no coincide: se marcó para revisión.');
+    indexar();
+    if (state.fichaKey) state.fichaKey = personaKey(rec) || state.fichaKey;
     $('#dlgForm').close(); refresh();
   }
 
   /* ---------- Ver / eliminar ---------- */
-  function openView(id) {
-    const r = state.rows.find(x => x._id === id); if (!r) return;
-    state.viewingId = id;
-    $('#viewTitle').textContent = r.nombre || '(sin nombre)';
-    const body = $('#viewBody'); body.replaceChildren();
-    COLS.forEach(c => {
-      let val = r[c.k];
-      if (c.type === 'date') val = isoToDisplay(val);
-      body.append(el('dt', { text: c.h }), el('dd', { text: val == null || val === '' ? '—' : String(val) }));
-    });
+  function openView(hojaId, id) {
+    const hoja = HOJA[hojaId], r = buscar(hojaId, id); if (!r) return;
+    state.viewing = { hoja: hojaId, id: r._id };
+    $('#viewTitle').textContent = r.nombre || r.serie || '(sin nombre)';
+    $('#viewHoja').textContent = hoja.titulo;
+    $('#viewBody').replaceChildren(...hoja.campos.flatMap(c => [el('dt', { text: c.h }), el('dd', { text: mostrar(c, r[c.k]) || '—' })]));
+    $('#viewFicha').hidden = !personaKey(r);
     $('#dlgView').showModal();
   }
-  function openDelete(id) {
-    const r = state.rows.find(x => x._id === id); if (!r) return;
-    state.deletingId = id;
-    $('#delText').textContent = `¿Eliminar a ${r.nombre} (RUT ${r.rut})? Esta acción no se puede deshacer. Se recomienda descargar un respaldo en Excel antes de eliminar.`;
+  function openDelete(hojaId, id) {
+    const hoja = HOJA[hojaId], r = buscar(hojaId, id); if (!r) return;
+    state.deleting = { hoja: hojaId, id: r._id };
+    $('#delText').textContent = `¿Eliminar a ${r.nombre || 'este registro'}${r.rut ? ' (RUT ' + r.rut + ')' : ''} de «${hoja.titulo}»? Solo se borra de esta hoja. Esta acción no se puede deshacer.`;
     $('#dlgDelete').showModal();
   }
 
   /* ---------- Eventos ---------- */
   document.addEventListener('click', ev => {
-    const t = ev.target.closest('[data-action],[data-act],[data-sort],[data-close]');
+    const t = ev.target.closest('[data-action],[data-act],[data-sort],[data-close],[data-tab],[data-quick],[data-persona],[data-hoy]');
     if (!t) return;
     if (t.dataset.close !== undefined) return t.closest('dialog').close();
+    if (t.dataset.tab) return setTab(t.dataset.tab);
+    if (t.dataset.hoy) { $('#' + t.dataset.hoy).value = fechaTexto(hoyIso()); return; }
+    if (t.dataset.persona) { state.fichaKey = t.dataset.persona; window.scrollTo(0, 0); return refresh(); }
+    if (t.dataset.quick !== undefined) {
+      const v = state.vista[state.tab];
+      v.quick = v.quick === t.dataset.quick ? '' : t.dataset.quick; v.page = 1;
+      return renderHoja();
+    }
     if (t.dataset.sort) {
-      const k = t.dataset.sort;
-      state.sort = state.sort.k === k ? { k, dir: -state.sort.dir } : { k, dir: 1 };
-      return refresh();
+      const v = state.vista[state.tab], k = t.dataset.sort;
+      v.sort = v.sort.k === k ? (v.sort.dir === 1 ? { k, dir: -1 } : { k: null, dir: 1 }) : { k, dir: 1 };
+      return renderHoja();
     }
     if (t.dataset.act) {
-      const id = t.dataset.id;
+      const hojaId = t.dataset.hoja || state.tab, id = t.dataset.id;
       if (t.dataset.act === 'del' && !state.isAdmin) return;
-      return t.dataset.act === 'view' ? openView(id) : t.dataset.act === 'edit' ? openForm(id) : openDelete(id);
+      return t.dataset.act === 'view' ? openView(hojaId, id) : t.dataset.act === 'edit' ? openForm(hojaId, id) : openDelete(hojaId, id);
     }
     switch (t.dataset.action) {
-      case 'new': return openForm(null);
+      case 'new': return openForm(state.tab, null);
       case 'import': return state.isAdmin ? $('#file').click() : toast('Solo un administrador puede cargar el Excel.');
       case 'forgot': return forgotPassword();
       case 'export': return exportExcel();
       case 'start-empty': state.started = true; return refresh();
       case 'logout': return db.auth.signOut();
+      case 'ficha-volver': state.fichaKey = null; refresh(); return $('#fq').focus();
+      case 'ficha-agregar': {
+        const p = personas().get(state.fichaKey); if (!p) return;
+        const otro = HOJAS.map(h => (p.hojas[h.id] || [])[0]).find(Boolean) || {};
+        const pre = { nombre: p.nombre, rut: p.rut };
+        ['edad', 'telefono'].forEach(k => { if (otro[k] != null && otro[k] !== '' && HOJA[t.dataset.hoja].campos.some(c => c.k === k)) pre[k] = otro[k]; });
+        if (t.dataset.hoja === 'reimpresiones' || t.dataset.hoja === 'tarjetas') {
+          const tj = (p.hojas.tarjetas || [])[0];
+          if (tj && t.dataset.hoja === 'reimpresiones') Object.assign(pre, { numero: tj.numero });
+        }
+        return openForm(t.dataset.hoja, null, pre);
+      }
     }
+  });
+  $('#tabs').addEventListener('keydown', e => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+    const ids = ['ficha', ...HOJAS.map(h => h.id)];
+    let i = ids.indexOf(state.tab);
+    i = e.key === 'Home' ? 0 : e.key === 'End' ? ids.length - 1 : (i + (e.key === 'ArrowRight' ? 1 : -1) + ids.length) % ids.length;
+    e.preventDefault(); setTab(ids[i]); $('#tab-' + ids[i]).focus();
   });
   $('#file').addEventListener('change', e => { const f = e.target.files[0]; e.target.value = ''; handleFile(f); });
   $('#form').addEventListener('submit', submitForm);
-  $('#form').addEventListener('input', e => { e.target.removeAttribute('aria-invalid'); if (!$('#formMsg').classList.contains('warn')) setMsg(''); });
-  F('rut').addEventListener('blur', () => {
-    const v = F('rut').value.trim(); if (!v) return setMsg('');
+  $('#form').addEventListener('input', e => { e.target.removeAttribute('aria-invalid'); state.confirmWarn = ''; if (!$('#formMsg').classList.contains('warn')) setMsg(''); });
+  $('#form').addEventListener('focusout', e => {
+    if (e.target.id !== 'f_rut') return;
+    const v = e.target.value.trim(); if (!v) return;
     const st = rutStatus(v);
-    if (st.format) F('rut').value = rutFormat(v);
-    setMsg(st.format && !st.ok ? `Aviso: el dígito verificador no coincide (debería ser ${st.dv}). Podrás guardarlo, pero quedará marcado para revisión.` : '', true);
+    if (st.format) e.target.value = rutFormat(v);
+    if (st.format && !st.ok) setMsg(`Aviso: el dígito verificador no coincide (debería ser ${st.dv}).`, true);
   });
-  $('#viewEdit').addEventListener('click', () => { $('#dlgView').close(); openForm(state.viewingId); });
+  $('#viewEdit').addEventListener('click', () => { $('#dlgView').close(); openForm(state.viewing.hoja, state.viewing.id); });
+  $('#viewFicha').addEventListener('click', () => { $('#dlgView').close(); abrirFicha(buscar(state.viewing.hoja, state.viewing.id)); });
   $('#delConfirm').addEventListener('click', async () => {
+    const { hoja: hojaId, id } = state.deleting;
     try {
-      await dbDelete(state.deletingId);
-      state.rows = state.rows.filter(r => r._id !== state.deletingId);
-      $('#dlgDelete').close(); refresh(); toast('Usuario eliminado.');
+      const { error } = await db.from(HOJA[hojaId].tabla).delete().eq('id', id);
+      if (error) throw error;
+      state.data[hojaId] = state.data[hojaId].filter(r => r._id !== id);
+      indexar();
+      $('#dlgDelete').close(); refresh(); toast('Registro eliminado.');
     } catch (e) {
       toast('No se pudo eliminar: ' + (e.message || e));
     }
   });
   $('#impConfirm').addEventListener('click', () => { $('#dlgImport').close(); confirmImport(); });
 
-  let tmr;
-  $('#q').addEventListener('input', e => { clearTimeout(tmr); tmr = setTimeout(() => { state.q = e.target.value; state.page = 1; renderBody(); }, 150); });
-  $('#fPresente').addEventListener('change', e => { state.fPresente = e.target.value; state.page = 1; renderBody(); });
-  $('#fRsh').addEventListener('change', e => { state.fRsh = e.target.value; state.page = 1; renderBody(); });
-  $('#fAlertas').addEventListener('change', e => { state.fAlertas = e.target.checked; state.page = 1; renderBody(); });
-  $('#pageSize').addEventListener('change', e => { state.pageSize = Number(e.target.value); state.page = 1; renderBody(); });
-  $('#prev').addEventListener('click', () => { state.page--; renderBody(); });
-  $('#next').addEventListener('click', () => { state.page++; renderBody(); });
+  let tmr, ftmr;
+  $('#q').addEventListener('input', e => { clearTimeout(tmr); tmr = setTimeout(() => { const v = state.vista[state.tab]; v.q = e.target.value; v.page = 1; renderBody(hojaActual()); }, 150); });
+  $('#fq').addEventListener('input', e => { clearTimeout(ftmr); ftmr = setTimeout(() => { state.fichaQ = e.target.value; state.fichaKey = null; renderFicha(); }, 150); });
+  $('#filtro').addEventListener('change', e => { const v = state.vista[state.tab]; v.filtro = e.target.value; v.page = 1; renderBody(hojaActual()); });
+  $('#pageSize').addEventListener('change', e => { const v = state.vista[state.tab]; v.pageSize = Number(e.target.value); v.page = 1; renderBody(hojaActual()); });
+  $('#prev').addEventListener('click', () => { state.vista[state.tab].page--; renderBody(hojaActual()); });
+  $('#next').addEventListener('click', () => { state.vista[state.tab].page++; renderBody(hojaActual()); });
 
   /* ---------- Sesión (inicio / cierre) ---------- */
   function showLogin(msg) {
@@ -503,7 +618,8 @@
   }
   async function onSession(session) {
     if (!session) {
-      state.userId = null; state.isAdmin = false; state.loaded = false; state.rows = []; state.started = false;
+      state.userId = null; state.isAdmin = false; state.loaded = false; state.started = false;
+      HOJAS.forEach(h => { state.data[h.id] = []; });
       return showLogin();
     }
     if (needPassword) {
@@ -523,7 +639,7 @@
     $('#userEmail').textContent = (session.user.email || '') + (state.isAdmin ? ' · administrador' : '');
     toast('Cargando datos…');
     try { await loadAll(); }
-    catch (e) { toast('No se pudieron cargar los datos: ' + (e.message || e)); }
+    catch (e) { toast('No se pudieron cargar los datos: ' + (e.message || e), 7000); }
     refresh();
   }
   $('#loginForm').addEventListener('submit', async ev => {
